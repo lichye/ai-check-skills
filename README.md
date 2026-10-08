@@ -37,19 +37,16 @@ AI-check Skills 不依赖 LibreOffice、`soffice`、Microsoft Word 自动化、D
 
 ## 安装
 
-推荐用通用的 skills 安装器（支持 Claude Code、Codex、OpenCode、Cursor、GitHub Copilot 等）：
-
-```bash
-npx skills add HoneyMeta/ai-check-skills
-```
-
-也可以直接在 Claude Code、Codex、OpenCode 等 AI 编程助手中发送：
+在 Claude Code、Codex、OpenCode、Cursor、GitHub Copilot 等 AI 编程助手中直接发送：
 
 ```text
-帮我安装 HoneyMeta/ai-check-skills
+帮我安装 https://github.com/HoneyMeta/ai-check-skills
 ```
 
-安装完成后，重启客户端让新安装的 skill 生效。依赖（Python 3.10+）：
+安装完成后，重启客户端让新安装的 skill 生效。
+也可以手动用通用的 skills 安装器：`npx skills add HoneyMeta/ai-check-skills`。
+
+依赖（Python 3.10+，缺少时 AI 会按 SKILL.md 自动安装）：
 
 ```bash
 python -m pip install "python-docx>=1.1" "reportlab>=4"
@@ -158,14 +155,14 @@ assistant remains responsible for judgment and rewriting so the user can see the
 
 ### Install
 
-Install with the cross-agent skills installer (Claude Code, Codex, OpenCode, Cursor, GitHub Copilot, …):
+Ask your AI coding assistant (Claude Code, Codex, OpenCode, Cursor, GitHub Copilot, …):
 
-```bash
-npx skills add HoneyMeta/ai-check-skills
+```text
+Install https://github.com/HoneyMeta/ai-check-skills
 ```
 
-or ask your AI coding assistant to `Install HoneyMeta/ai-check-skills`. Restart the assistant afterwards
-so the new skill is loaded. Dependencies (Python 3.10+):
+Restart the assistant afterwards so the new skill is loaded. To install manually, use the cross-agent
+skills installer: `npx skills add HoneyMeta/ai-check-skills`. Dependencies (Python 3.10+):
 `python -m pip install "python-docx>=1.1" "reportlab>=4"`.
 
 ### Quick Start
