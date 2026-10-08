@@ -41,21 +41,35 @@ REPORT_MIN_VALUE = 0.30
 REPORT_FRAGMENT_MAX_CHARS = 360
 REPORT_FRAGMENT_MIN_CHARS = 24
 OFFICIAL_SITE = "https://honeymeta.com/easyidea/"
+DETECTION_SCOPE = (
+    "ChatGPT/GPT、Claude、Gemini、DeepSeek、通义千问 Qwen、豆包、Kimi、智谱 GLM、文心一言、"
+    "腾讯元宝/混元、MiniMax、讯飞星火、Grok 等大模型生成或润色的文本（包括但不限于）"
+)
 
 
 TEMPLATE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("首先其次最后模板", re.compile(r"首先[\s\S]{0,120}其次[\s\S]{0,120}(?:最后|最终)")),
+    ("一是二是三是罗列", re.compile(r"一是[\s\S]{0,120}二是[\s\S]{0,120}三是")),
     ("此外同时另外堆叠", re.compile(r"此外[\s\S]{0,120}同时[\s\S]{0,120}另外")),
     ("一方面另一方面对称句", re.compile(r"一方面[\s\S]{0,120}另一方面")),
-    ("不仅而且对称句", re.compile(r"不仅[\s\S]{0,120}而且")),
+    ("不仅而且对称句", re.compile(r"不仅[\s\S]{0,120}(?:而且|更|还|也)")),
     ("综上所述", re.compile(r"综上所述")),
+    ("总而言之类收束", re.compile(r"总而言之|总的来说|综合来看|简而言之")),
     ("由此可见", re.compile(r"由此可见")),
-    ("值得注意的是", re.compile(r"值得注意的是")),
+    ("值得注意的是", re.compile(r"值得(?:注意|一提|关注)的是|需要指出的是|不难发现")),
     ("不可否认", re.compile(r"不可否认")),
     ("毋庸置疑", re.compile(r"毋庸置疑")),
     ("显而易见", re.compile(r"显而易见")),
     ("众所周知", re.compile(r"众所周知")),
     ("不言而喻", re.compile(r"不言而喻")),
+    ("随着发展开头", re.compile(r"随着.{0,24}?的?(?:快速|飞速|迅猛|迅速|不断|持续|蓬勃)发展")),
+    ("背景浪潮套语", re.compile(r"在.{0,20}?(?:大背景|背景|浪潮|时代)下")),
+    # English academic prose
+    ("In conclusion/summary", re.compile(r"\b(?:in conclusion|in summary|to sum up|all in all)\b", re.I)),
+    ("It is worth noting", re.compile(r"\bit is (?:worth noting|important to note|noteworthy) that\b", re.I)),
+    ("not only…but also", re.compile(r"\bnot only\b[\s\S]{0,120}\bbut also\b", re.I)),
+    ("Firstly/Secondly/Finally", re.compile(r"\bfirst(?:ly)?,[\s\S]{0,240}\bsecond(?:ly)?,[\s\S]{0,240}\b(?:finally|lastly|third(?:ly)?),", re.I)),
+    ("In today's… opener", re.compile(r"\bin (?:today's|the modern|an era of|the rapidly evolving|the ever-evolving)\b", re.I)),
 ]
 
 CONNECTORS = (
@@ -76,29 +90,66 @@ CONNECTORS = (
     "另一方面",
 )
 
+EN_CONNECTOR_RE = re.compile(
+    r"\b(?:moreover|furthermore|additionally|in addition|however|therefore|consequently|thus|hence|"
+    r"nevertheless|notably|importantly|overall|specifically)\b",
+    re.I,
+)
+
 GENERIC_CLAIM_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("重要意义套话", re.compile(r"(?:具有|具备).{0,12}(?:重要|重大).{0,12}(?:意义|价值)")),
-    ("广阔前景套话", re.compile(r"(?:广阔|良好).{0,8}(?:应用)?前景")),
+    ("广阔前景套话", re.compile(r"(?:广阔|良好).{0,8}(?:应用)?前景|前景(?:十分|非常)?广阔")),
     ("理论实践价值套话", re.compile(r"理论价值.{0,12}现实意义|现实意义.{0,12}理论价值")),
     ("高效可靠可信泛化目标", re.compile(r"(?:高效|可靠|可信|智能化|实用化).{0,18}(?:系统|框架|方案)")),
     ("深入全面研究", re.compile(r"(?:深入|全面).{0,8}研究")),
     ("一系列问题挑战", re.compile(r"一系列.{0,8}(?:问题|挑战)")),
+    ("赋能助力流行语", re.compile(r"赋能|助力|深度融合|全方位|多维度|新范式|新路径|新思路")),
+    ("关键作用套话", re.compile(r"发挥(?:着)?.{0,6}(?:重要|关键|不可替代|积极)(?:的)?作用|至关重要|举足轻重")),
+    ("支撑基础套话", re.compile(r"(?:提供|奠定)(?:了)?.{0,6}(?:有力|坚实|重要)(?:的)?(?:支撑|基础|保障)")),
+    ("日益凸显套话", re.compile(r"日益(?:增长|突出|凸显|重要|广泛|迫切)|愈发(?:重要|突出)")),
+    # English LLM-flavoured vocabulary; each hit is weak evidence only
+    (
+        "LLM 高频词",
+        re.compile(
+            r"\b(?:delve[sd]?|delving|tapestry|testament to|pivotal|underscor(?:e|es|ed|ing)|showcas(?:e|es|ed|ing)|"
+            r"intricate|multifaceted|realm|seamless(?:ly)?|cutting-edge|ever-evolving|paving the way|"
+            r"shed(?:s|ding)? light on|navigat(?:e|es|ing) the complexities|game[- ]changer)\b",
+            re.I,
+        ),
+    ),
+    ("crucial role", re.compile(r"\bplay(?:s|ing)? an? (?:crucial|pivotal|vital|key|significant|important) role\b", re.I)),
+    ("significant implications", re.compile(r"\b(?:significant|profound|far-reaching) (?:implications|potential)\b|\bbroad (?:application )?prospects\b", re.I)),
 ]
 
+METHOD_NAME_RE = re.compile(
+    r"\b(?:CNN|RNN|LSTM|GRU|Transformer|BERT|GPT-?\d*|ResNet-?\d*|U-?Net|YOLO\w*|ViT|Grad-CAM|XGBoost|SVM|CQT|MFCC|"
+    r"BSCQT|DCAM|DCAMNet|AB-CQT|DFAM|DFAMNet)\b"
+    # generic CamelCase / acronym model names with >=3 chars, e.g. BiLSTM, EfficientNet-B0, LoRA
+    r"|\b(?=[A-Za-z0-9-]{3,}\b)[A-Z][A-Za-z]*[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)?\b"
+)
+
 EVIDENCE_MARKER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("引用编号", re.compile(r"\[\d+(?:[-,，、]\d+)*\]")),
+    ("引用编号", re.compile(r"\[\d+(?:\s*[-–,，、]\s*\d+)*\]|\([A-Z][A-Za-z-]+(?: et al\.)?,? \d{4}[a-z]?\)")),
     (
         "实验指标",
-        re.compile(r"\d+(?:\.\d+)?\s*(?:%|G\s*FLOPs?|FLOPs?|MB|GB|ms|s|Hz|kHz|MHz|dB|mAP|AUC|F1)", re.I),
+        re.compile(
+            r"\d+(?:\.\d+)?\s*(?:%|％|G\s*FLOPs?|FLOPs?|MB|GB|ms|s|Hz|kHz|MHz|dB|mAP|AUC|F1|BLEU|ROUGE|mIoU|PSNR|SSIM)(?![A-Za-z])",
+            re.I,
+        ),
     ),
+    ("统计量", re.compile(r"\bp\s*[<=>≤]\s*0?\.\d+|±|95\s*%\s*CI|\bn\s*=\s*\d+|标准差|置信区间")),
+    ("模型或方法名", METHOD_NAME_RE),
     (
-        "模型或方法名",
-        re.compile(r"\b(?:CNN|RNN|LSTM|GRU|Transformer|BSCQT|DCAM|DCAMNet|AB-CQT|DFAM|DFAMNet|Grad-CAM|XGBoost|CQT)\b"),
+        "实验结果表述",
+        re.compile(r"实验结果(?:表明|显示|验证)|准确率|召回率|计算复杂度|消融|对比实验|数据集|\b(?:ablation|baseline|dataset|benchmark)s?\b", re.I),
     ),
-    ("实验结果表述", re.compile(r"实验结果(?:表明|显示|验证)|准确率|计算复杂度|消融|对比实验|数据集")),
     (
         "限定或取舍",
-        re.compile(r"在.{0,18}(?:条件|场景|约束|限制)下|针对.{0,24}(?:问题|场景|任务)|本文(?:聚焦|采用|选取|限定)"),
+        re.compile(
+            r"在.{0,18}(?:条件|场景|约束|限制)下|针对.{0,24}(?:问题|场景|任务)|本文(?:聚焦|采用|选取|限定)"
+            r"|\b(?:under the (?:condition|assumption)|limited to|we (?:restrict|focus on|chose|choose|adopt))\b",
+            re.I,
+        ),
     ),
 ]
 
@@ -112,6 +163,7 @@ class TraceFeatures:
     connectorDensity: float
     sentenceCount: int
     sentenceLengthVariance: float | None
+    sentenceLengthCV: float | None
     uniformSentenceRhythm: bool
     genericClaimCount: int
     evidenceMarkers: list[str]
@@ -164,10 +216,22 @@ def normalize_paragraphs(text: str) -> list[str]:
     ]
 
 
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?；;])\s*|(?<=[.])\s+(?=[A-Z0-9\"“(\[])")
+
+
+def join_sentences(left: str, right: str) -> str:
+    """Re-join split sentences: CJK needs no separator, Latin text needs the space back."""
+    if not left:
+        return right
+    if re.search(r"[A-Za-z0-9.,;:!?)\]\"”]$", left) and re.match(r"[A-Za-z0-9\"“(\[]", right):
+        return f"{left} {right}"
+    return f"{left}{right}"
+
+
 def split_sentences(text: str) -> list[str]:
     return [
         re.sub(r"\s+", " ", item).strip()
-        for item in re.split(r"(?<=[。！？!?；;])\s*", text or "")
+        for item in SENTENCE_SPLIT_RE.split(text or "")
         if count_chars(item) > 5
     ]
 
@@ -181,14 +245,20 @@ def scan_trace_features(text: str) -> TraceFeatures:
     sentences = split_sentences(normalized)
     sentence_lengths = [count_chars(sentence) for sentence in sentences]
     variance: float | None = None
+    cv: float | None = None
     if sentence_lengths:
         avg = sum(sentence_lengths) / len(sentence_lengths)
         variance = sum((length - avg) ** 2 for length in sentence_lengths) / len(sentence_lengths)
-    uniform = len(sentences) >= 4 and variance is not None and variance < 120
+        cv = math.sqrt(variance) / avg if avg else None
+    # Coefficient of variation instead of raw variance so the same rule works for Chinese
+    # (short sentences) and English (long sentences counted in letters).
+    uniform = len(sentences) >= 4 and cv is not None and cv < 0.3
 
     template_phrases = unique_limited(label for label, pattern in TEMPLATE_PATTERNS if pattern.search(normalized))
-    connector_count = sum(normalized.count(connector) for connector in CONNECTORS)
+    connector_count = sum(normalized.count(connector) for connector in CONNECTORS) + pattern_count(normalized, EN_CONNECTOR_RE)
     connector_density = round(connector_count / len(sentences), 3) if sentences else 0.0
+    # Chinese "——" pairs and English em dashes used as clause glue.
+    dash_count = normalized.count("——") + len(re.findall(r"(?<!—)—(?!—)", normalized))
 
     generic_labels: list[str] = []
     generic_count = 0
@@ -201,23 +271,36 @@ def scan_trace_features(text: str) -> TraceFeatures:
     evidence_markers = unique_limited(
         label for label, pattern in EVIDENCE_MARKER_PATTERNS if pattern.search(normalized)
     )
+    method_names = {match.group(0) for match in METHOD_NAME_RE.finditer(normalized)}
 
     risk_signals = [
         *(f"模板表达:{label}" for label in template_phrases),
         "句式节奏过于均匀" if uniform else "",
         "连接词密集" if connector_density >= 0.45 and connector_count >= 3 else "",
+        "破折号偏多" if dash_count >= 2 else "",
         f"泛化套话:{'/'.join(unique_limited(generic_labels, 3))}" if generic_count else "",
         "贡献罗列结构"
-        if re.search(r"主要研究工作如下|具体研究内容如下|本文(?:提出|构建|设计).{0,80}(?:方法|框架).{0,80}(?:实验结果|结果表明)", normalized)
+        if re.search(
+            r"主要研究工作如下|具体研究内容如下|本文(?:提出|构建|设计).{0,80}(?:方法|框架).{0,80}(?:实验结果|结果表明)"
+            r"|\b(?:our|the main) contributions (?:are|of this (?:paper|work))\b",
+            normalized,
+            re.I,
+        )
         else "",
         "目标表述泛化" if re.search(r"(?:旨在|力求|致力于).{0,40}(?:高效|可靠|可信|智能化|实用化)", normalized) else "",
     ]
 
     mitigating = [
         *(f"具体证据:{label}" for label in evidence_markers),
-        "领域方法细节" if re.search(r"\b(?:BSCQT|DCAM|DCAMNet|AB-CQT|DFAM|DFAMNet|Grad-CAM|XGBoost)\b", normalized) else "",
-        "定量结果支撑" if re.search(r"\d+(?:\.\d+)?\s*%", normalized) and re.search(r"准确率|提升|降低|复杂度|FLOPs?", normalized, re.I) else "",
-        "限制条件说明" if re.search(r"(?:但|然而|不过).{0,40}(?:限制|不足|难以|约束|挑战)", normalized) else "",
+        "领域方法细节" if len(method_names) >= 2 else "",
+        "定量结果支撑"
+        if re.search(r"\d+(?:\.\d+)?\s*[%％]", normalized)
+        and re.search(r"准确率|提升|降低|复杂度|FLOPs?|\b(?:improv|reduc|outperform|accuracy)", normalized, re.I)
+        else "",
+        "限制条件说明"
+        if re.search(r"(?:但|然而|不过).{0,40}(?:限制|不足|难以|约束|挑战)", normalized)
+        or re.search(r"\b(?:however|but|although)\b.{0,80}\b(?:limit(?:ation|ed|s)?|cannot|fails?|constraints?|drawbacks?)\b", normalized, re.I)
+        else "",
     ]
 
     return TraceFeatures(
@@ -228,10 +311,34 @@ def scan_trace_features(text: str) -> TraceFeatures:
         connectorDensity=connector_density,
         sentenceCount=len(sentences),
         sentenceLengthVariance=round(variance, 3) if variance is not None else None,
+        sentenceLengthCV=round(cv, 3) if cv is not None else None,
         uniformSentenceRhythm=uniform,
         genericClaimCount=generic_count,
         evidenceMarkers=evidence_markers,
     )
+
+
+SENTENCE_END_RE = re.compile(r"[。！？!?；;]")
+NUMBERED_HEADING_RE = re.compile(r"^(?:第[一二三四五六七八九十百千万\d]+[章节部分篇]|[0-9]+(?:\.[0-9]+){0,4}(?:\s+|[、.．]\s*)?[一-鿿A-Za-z])")
+# "2019年以来……"、"3种方法……"、"20%的样本……" are sentences that merely start with a number.
+NUMBER_STARTS_SENTENCE_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?\s*(?:年|月|日|%|％|个|种|项|名|人|次|倍|篇|组|类|位|家|台|款|条|株|只|例|天|小时|分钟|秒)")
+CAPTION_RE = re.compile(r"^(?:图|表|Fig\.?|Figure|Table)\s*\d+(?:[.\-－–]\d+)*(?:\s+|[:：.．]\s*|$)", re.I)
+
+
+def looks_like_numbered_heading(text: str) -> bool:
+    """A numbered heading such as "1 绪论" or "第二章 方法": short, no sentence punctuation."""
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not NUMBERED_HEADING_RE.match(normalized) or NUMBER_STARTS_SENTENCE_RE.match(normalized):
+        return False
+    return count_chars(normalized) <= 60 and not SENTENCE_END_RE.search(normalized)
+
+
+def looks_like_caption(text: str) -> bool:
+    """Figure/table captions like "表3.2 实验参数". Body sentences such as "表2给出了……" are kept."""
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not CAPTION_RE.match(normalized):
+        return False
+    return count_chars(normalized) <= 60 and not SENTENCE_END_RE.search(normalized[:-1])
 
 
 def infer_section_type(text: str) -> SectionType:
@@ -246,7 +353,7 @@ def infer_section_type(text: str) -> SectionType:
         return "conclusion"
     if re.match(r"^(参考文献|References)$", compact, re.I):
         return "references"
-    if re.match(r"^(第[一二三四五六七八九十百千万\d]+[章节部分篇]|[0-9]+(?:\.[0-9]+){0,4}\s*[\u4e00-\u9fffA-Za-z])", text or ""):
+    if looks_like_numbered_heading(text):
         return "chapter_title"
     return "body"
 
@@ -326,11 +433,11 @@ def is_non_content_text(text: str, section_type: SectionType | None = None) -> b
         return True
     if re.fullmatch(r"参考文献|References", compact, re.I):
         return True
-    if re.match(r"^(?:第[一二三四五六七八九十百千万\d]+[章节部分篇]|[0-9]+(?:\.[0-9]+){0,4})", compact):
+    if looks_like_numbered_heading(normalized):
         return True
     if count_chars(normalized) <= 60 and re.match(r"^(?:\([一二三四五六七八九十\d]+\)|（[一二三四五六七八九十\d]+）|[一二三四五六七八九十\d]+[、.．])", normalized) and not re.search(r"[。！？!?；;，,：:]", normalized):
         return True
-    if re.match(r"^(?:图|表)\s*\d+(?:[.-]\d+)*\s*", normalized):
+    if looks_like_caption(normalized):
         return True
     return False
 
@@ -341,7 +448,7 @@ def split_paragraph(paragraph: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> lis
         return [normalized]
     pieces: list[str] = []
     current = ""
-    for sentence in re.split(r"(?<=[。！？!?；;])\s*", normalized):
+    for sentence in SENTENCE_SPLIT_RE.split(normalized):
         sentence = sentence.strip()
         if not sentence:
             continue
@@ -349,7 +456,7 @@ def split_paragraph(paragraph: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> lis
             pieces.append(current.strip())
             current = sentence
         else:
-            current += sentence
+            current = join_sentences(current, sentence)
     if current.strip():
         pieces.append(current.strip())
     return pieces or [normalized[:max_chars]]
@@ -475,27 +582,78 @@ def build_chunks(text: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> list[Chunk]
     return compact_chunks(chunks, max_chars=max_chars)
 
 
-def iter_table_text(table: Any) -> Iterable[str]:
-    for row in table.rows:
-        for cell in row.cells:
-            for paragraph in cell.paragraphs:
-                text = paragraph.text.strip()
-                if text:
-                    yield text
-            for nested in cell.tables:
-                yield from iter_table_text(nested)
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
 
 
-def read_docx_text(path: Path) -> tuple[str, dict[str, str]]:
+def w_tag(name: str) -> str:
+    return f"{{{W_NS}}}{name}"
+
+
+def owning_paragraph(element: Any) -> Any:
+    parent = element.getparent()
+    while parent is not None and parent.tag != w_tag("p"):
+        parent = parent.getparent()
+    return parent
+
+
+def paragraph_units(paragraph_element: Any) -> list[tuple[str, Any, int]]:
+    """Visible characters of one paragraph as (char, element, offset).
+
+    Shared by the scanner and the rewriter so both see exactly the same text. Unlike
+    python-docx's ``Paragraph.text`` this also covers runs inside tracked insertions,
+    smart tags, simple fields and inline content controls, and it never mixes in text
+    from a text box anchored inside the paragraph.
+    """
+    units: list[tuple[str, Any, int]] = []
+    for element in paragraph_element.iter(w_tag("t"), w_tag("tab"), w_tag("br"), w_tag("cr"), w_tag("noBreakHyphen")):
+        if owning_paragraph(element) is not paragraph_element:
+            continue
+        if element.tag == w_tag("t"):
+            for offset, char in enumerate(element.text or ""):
+                units.append((char, element, offset))
+        elif element.getparent() is not None and element.getparent().tag == w_tag("r"):
+            # w:tab can also be a tab-stop definition under w:pPr/w:tabs; only run content counts.
+            char = {"tab": "\t", "br": "\n", "cr": "\n", "noBreakHyphen": "-"}[element.tag.rsplit("}", 1)[1]]
+            units.append((char, element, -1))
+    return units
+
+
+def paragraph_element_text(paragraph_element: Any) -> str:
+    return "".join(char for char, _element, _offset in paragraph_units(paragraph_element))
+
+
+def iter_body_paragraph_elements(document: Any, include_tables: bool = True) -> Iterable[Any]:
+    """Every body paragraph in document order: top level, content controls, tables, text boxes.
+
+    Fallback copies of text boxes (mc:Fallback) are skipped so their text is not seen twice.
+    """
+    for paragraph_element in document.element.body.iter(w_tag("p")):
+        ancestor = paragraph_element.getparent()
+        skip = False
+        while ancestor is not None:
+            if ancestor.tag == MC_FALLBACK or (not include_tables and ancestor.tag == w_tag("tbl")):
+                skip = True
+                break
+            ancestor = ancestor.getparent()
+        if not skip:
+            yield paragraph_element
+
+
+def read_docx_text(path: Path, include_tables: bool = False) -> tuple[str, dict[str, str]]:
     try:
         from docx import Document  # type: ignore
     except Exception as exc:  # pragma: no cover - depends on optional package
         raise RuntimeError("python-docx is required for reading DOCX files: python -m pip install python-docx") from exc
 
     document = Document(str(path))
-    lines = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
-    for table in document.tables:
-        lines.extend(iter_table_text(table))
+    # Keep document order. Tables are structured data rather than prose, so they are skipped
+    # by default instead of being appended after the references as before.
+    lines = [
+        text.strip()
+        for text in (paragraph_element_text(p) for p in iter_body_paragraph_elements(document, include_tables=include_tables))
+        if text.strip()
+    ]
     props = document.core_properties
     metadata = {
         "title": (props.title or "").strip(),
@@ -539,8 +697,14 @@ def summarize_title(path: Path, text: str, explicit_title: str | None = None, me
     return path.stem or "untitled"
 
 
-def scan_docx(path: Path, title: str | None = None, author: str | None = None, max_chars: int = MAX_CHARS_PER_CHUNK) -> dict[str, Any]:
-    text, metadata = read_docx_text(path)
+def scan_docx(
+    path: Path,
+    title: str | None = None,
+    author: str | None = None,
+    max_chars: int = MAX_CHARS_PER_CHUNK,
+    include_tables: bool = False,
+) -> dict[str, Any]:
+    text, metadata = read_docx_text(path, include_tables=include_tables)
     chunks = build_chunks(text, max_chars=max_chars)
     return {
         "schemaVersion": 1,
@@ -582,11 +746,16 @@ def normalize_results(payload: Any) -> list[Result]:
     for item in raw_results:
         if not isinstance(item, dict):
             raise ValueError("each result must be an object")
-        value = float(item.get("aigcValue"))
+        try:
+            value = float(item.get("aigcValue"))
+        except (TypeError, ValueError):
+            raise ValueError(f"aigcValue missing or not a number for {item.get('chunkId')}") from None
+        if 1 < value <= 100:
+            value = value / 100  # assistants sometimes answer 0-100 instead of 0-1
         if not math.isfinite(value) or value < 0 or value > 1:
             raise ValueError(f"aigcValue must be 0..1 for {item.get('chunkId')}")
-        sensitivity = str(item.get("sensitivity") or "medium")
-        verdict = str(item.get("verdict") or "suspicious")
+        sensitivity = str(item.get("sensitivity") or "medium").strip().lower()
+        verdict = str(item.get("verdict") or "suspicious").strip().lower()
         if sensitivity not in ("low", "medium", "high"):
             raise ValueError(f"invalid sensitivity for {item.get('chunkId')}")
         if verdict not in ("human", "suspicious", "ai"):
@@ -618,11 +787,11 @@ def build_report_fragments(text: str) -> list[str]:
         if is_non_content_text(paragraph):
             continue
         current = ""
-        for sentence in re.split(r"(?<=[。！？!?；;])\s*", paragraph):
+        for sentence in SENTENCE_SPLIT_RE.split(paragraph):
             normalized = sentence.strip()
             if not normalized:
                 continue
-            next_text = f"{current}{normalized}" if current else normalized
+            next_text = join_sentences(current, normalized)
             if current and count_chars(next_text) > REPORT_FRAGMENT_MAX_CHARS:
                 fragments.append(current)
                 current = normalized
@@ -684,6 +853,10 @@ def percent(value: float) -> str:
 
 def get_report_rows(scan: dict[str, Any], results: list[Result]) -> list[dict[str, Any]]:
     result_by_chunk = {result.chunkId: result for result in results}
+    known = {str(chunk.get("chunkId") or "") for chunk in scan.get("chunks", [])}
+    unknown = sorted(set(result_by_chunk) - known)
+    if unknown:
+        print(f"AI-check warning: results reference unknown chunkIds (ignored): {', '.join(unknown[:10])}", file=sys.stderr)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for chunk in scan.get("chunks", []):
@@ -777,7 +950,7 @@ def render_html(scan: dict[str, Any], rows: list[dict[str, Any]], summary: dict[
     <div>作者：{html.escape(author)}</div>
     <div>检测类型：AIGC 写作检测</div>
     <div>官网：<a class="site-link" href="{OFFICIAL_SITE}">{OFFICIAL_SITE}</a></div>
-    <div style="grid-column:1 / -1">检测范围：ChatGPT 讯飞星火 Gemini Kimi Claude 文心一言 通义千问 智谱AI 百川智能 360智脑 豆包 DeepSeek (包括但不限于)</div>
+    <div style="grid-column:1 / -1">检测范围：{html.escape(DETECTION_SCOPE)}</div>
   </section>
   <div class="section-title">检测结果</div>
   <section class="metrics">
@@ -805,7 +978,7 @@ def render_html(scan: dict[str, Any], rows: list[dict[str, Any]], summary: dict[
 """
 
 
-def find_cjk_font() -> str | None:
+def cjk_font_candidates() -> list[str]:
     candidates = [
         os.environ.get("AI_CHECK_PDF_FONT"),
         r"C:\Windows\Fonts\msyh.ttc",
@@ -816,35 +989,16 @@ def find_cjk_font() -> str | None:
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
     ]
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
-    return None
-
-
-def wrap_text_by_width(text: str, max_units: int) -> list[str]:
-    lines: list[str] = []
-    current = ""
-    units = 0
-    for char in text:
-        char_units = 2 if "\u4e00" <= char <= "\u9fff" else 1
-        if current and units + char_units > max_units:
-            lines.append(current)
-            current = char
-            units = char_units
-        else:
-            current += char
-            units += char_units
-    if current:
-        lines.append(current)
-    return lines or [""]
+    return [candidate for candidate in candidates if candidate and Path(candidate).exists()]
 
 
 def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
     try:
         from reportlab.lib import colors  # type: ignore
-        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT  # type: ignore
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT  # type: ignore
         from reportlab.lib.pagesizes import A4  # type: ignore
         from reportlab.lib.styles import ParagraphStyle  # type: ignore
         from reportlab.lib.units import mm  # type: ignore
@@ -856,15 +1010,16 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
         raise RuntimeError("reportlab is required for PDF output: python -m pip install reportlab") from exc
 
     def register_pdf_font() -> str:
-        cjk_font = find_cjk_font()
-        if cjk_font:
+        # reportlab cannot load CFF-outline fonts (e.g. Noto Sans CJK .otf/.ttc, PingFang), so keep
+        # trying candidates and fall back to the built-in STSong-Light CID font.
+        for cjk_font in cjk_font_candidates():
             try:
                 font_name = "AI_CHECK_CJK"
                 pdfmetrics.registerFont(TTFont(font_name, cjk_font))
                 pdfmetrics.registerFontFamily(font_name, normal=font_name, bold=font_name, italic=font_name, boldItalic=font_name)
                 return font_name
             except Exception:
-                pass
+                continue
         fallback = "STSong-Light"
         pdfmetrics.registerFont(UnicodeCIDFont(fallback))
         return fallback
@@ -987,27 +1142,6 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
         )
         return table
 
-    def color_for_value(value: float) -> Any:
-        if value >= 0.75:
-            return red
-        if value >= 0.45:
-            return amber
-        return green
-
-    def tint_for_value(value: float) -> Any:
-        if value >= 0.75:
-            return soft_red
-        if value >= 0.45:
-            return soft_amber
-        return soft_green
-
-    def label_for_value(value: float) -> str:
-        if value >= 0.75:
-            return "高风险"
-        if value >= 0.45:
-            return "中风险"
-        return "低风险"
-
     def header_card() -> Table:
         meta_data = [
             [paragraph(f"检测时间：{detection_time}", meta_style), paragraph(f"检测文献：{title}", meta_style)],
@@ -1120,7 +1254,7 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
     detection_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     title = str(scan.get("documentTitle") or "untitled")
     author = str(scan.get("author") or "unknown")
-    scope = "ChatGPT 讯飞星火 Gemini Kimi Claude 文心一言 通义千问 智谱AI 百川智能 360智脑 豆包 DeepSeek（包括但不限于）"
+    scope = DETECTION_SCOPE
 
     story: list[Any] = [
         header_card(),
@@ -1255,7 +1389,7 @@ def generate_report(scan_path: Path, results_path: Path, out_dir: Path) -> dict[
 
 def command_scan(args: argparse.Namespace) -> int:
     source = Path(args.docx)
-    data = scan_docx(source, title=args.title, author=args.author, max_chars=args.max_chars)
+    data = scan_docx(source, title=args.title, author=args.author, max_chars=args.max_chars, include_tables=args.include_tables)
     if args.out:
         write_json(Path(args.out), data)
     print(json.dumps(data if not args.out else {"scanPath": str(Path(args.out).resolve()), "chunks": len(data["chunks"]), "totalChars": data["totalChars"]}, ensure_ascii=False, indent=2))
@@ -1286,6 +1420,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--title", help="override document title")
     scan.add_argument("--author", help="override author")
     scan.add_argument("--max-chars", type=int, default=MAX_CHARS_PER_CHUNK, help="maximum Chinese-aware chars per chunk")
+    scan.add_argument("--include-tables", action="store_true", help="also scan text inside tables (skipped by default)")
     scan.set_defaults(func=command_scan)
 
     report = sub.add_parser("report", help="render HTML/PDF report from scan JSON and assistant results JSON")

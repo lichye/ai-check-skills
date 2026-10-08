@@ -11,13 +11,18 @@ Word/DOCX 论文 AI 率检测报告生成、自动化降 AI 率、重复率/AI �
 
 ## 功能亮点
 
-- 从 `.docx` 中读取正文、摘要、结论等论文内容。
+- 从 `.docx` 中按文档顺序读取正文、摘要、结论等论文内容（含内容控件里的段落；表格默认跳过）。
+- 支持中文与英文论文。
 - 自动切分长文本，生成适合 AI 助手逐段判断的 chunk。
-- 提取可解释的 AI 写作风险信号，例如模板化表达、连接词密集、泛化套话、句式节奏过于均匀等。
+- 提取可解释的 AI 写作风险信号，例如模板化表达、连接词密集、泛化套话、句式节奏过于均匀，
+  以及近年大模型常见的"赋能/助力/至关重要"、破折号堆叠、英文 delve / pivotal / underscore 等用语。
 - 同时记录缓和信号，例如引用编号、实验指标、模型/方法名、领域方法细节和定量结果支撑。
 - 由当前 AI 助手在可见对话中判断 `aigcValue`、verdict、reason 和 signals，脚本本身不黑箱打分。
 - 生成美观、可选择文本的 AI 率检测 PDF/HTML 报告。
-- 在用户确认后，将改写方案写入新的 DOCX，不会原地修改原文档。
+- 在用户确认后，将改写方案写入新的 DOCX，不会原地修改原文档；只改动有变化的字符，
+  原段落的加粗、上标引用、公式、图片、域代码都会保留。
+- 可选以 **Word 修订（Track Changes）** 形式写入，在 Word 里逐条接受/拒绝。
+- 改写校验：丢失引用编号（如 `[4]`）或数字（如 `2.1`）的替换会被拒绝。
 - 支持 Codex、Claude Code、OpenCode，以及其他能运行本地脚本的 agent runtime。
 
 ## 独立 DOCX/PDF 管线
@@ -32,14 +37,23 @@ AI-check Skills 不依赖 LibreOffice、`soffice`、Microsoft Word 自动化、D
 
 ## 安装
 
-在 Claude Code、Codex、OpenCode 等 AI 编程助手中发送：
+推荐用通用的 skills 安装器（支持 Claude Code、Codex、OpenCode、Cursor、GitHub Copilot 等）：
+
+```bash
+npx skills add HoneyMeta/ai-check-skills
+```
+
+也可以直接在 Claude Code、Codex、OpenCode 等 AI 编程助手中发送：
 
 ```text
 帮我安装 HoneyMeta/ai-check-skills
 ```
 
-安装完成后，重启 Claude Code / Codex / OpenCode 等客户端，让新安装的 skill 生效。
-如果客户端提示缺少依赖，让 AI 助手按仓库说明自动安装即可。
+安装完成后，重启客户端让新安装的 skill 生效。依赖（Python 3.10+）：
+
+```bash
+python -m pip install "python-docx>=1.1" "reportlab>=4"
+```
 
 ## 目录结构
 
@@ -53,8 +67,6 @@ ai-check/
   references/
     ai_rate_signals.md
     report_format.md
-  assets/
-    report_template.html
 docs/
   assets/
     ai-check-report-preview.png
@@ -89,6 +101,7 @@ AI 助手会读取 DOCX，生成可解释的片段信号，并输出：
 
 - `使用 ai-check-skills 帮我为 F:\papers\main.docx 生成 AI率检测报告`
 - `根据 AI-check 报告，先给我看需要修改的片段和改写方案，确认后再写出新的 Word。`
+- `确认后用修订模式写入新的 Word，我要在 Word 里逐条接受。`
 - `只检测，不改 Word。`
 
 ## 注意事项
@@ -115,7 +128,8 @@ and one-click accept/reject, download EasyIdea: https://honeymeta.com/easyidea
 
 ### Highlights
 
-- Reads `.docx` files and extracts body, abstract, and conclusion text.
+- Reads `.docx` files in document order (including content controls; tables skipped by default) and
+  extracts body, abstract, and conclusion text. Works for Chinese and English papers.
 - Splits long academic text into reviewable chunks.
 - Extracts explainable AI-writing signals such as template phrases, dense connectors, generic
   claims, and uniform sentence rhythm.
@@ -124,7 +138,10 @@ and one-click accept/reject, download EasyIdea: https://honeymeta.com/easyidea
 - Lets the active AI assistant judge `aigcValue`, verdict, reason, and signals in the visible
   conversation.
 - Generates a polished AI-rate report as HTML and selectable-text PDF.
-- Applies user-confirmed replacements to a new DOCX without modifying the original document.
+- Applies user-confirmed replacements to a new DOCX without modifying the original document. Only the
+  changed characters are rewritten, so bold text, superscript citations, equations, images and fields
+  survive; `--track-changes` writes the edits as Word revisions you can accept or reject.
+- Rejects rewrites that drop a citation marker such as `[4]` or a number such as `2.1`.
 - Supports Codex, Claude Code, OpenCode, and similar agent runtimes that can run local scripts.
 
 ### Independent Pipeline
@@ -141,14 +158,15 @@ assistant remains responsible for judgment and rewriting so the user can see the
 
 ### Install
 
-Ask your AI coding assistant to install this repository as a skill:
+Install with the cross-agent skills installer (Claude Code, Codex, OpenCode, Cursor, GitHub Copilot, …):
 
-```text
-Install HoneyMeta/ai-check-skills
+```bash
+npx skills add HoneyMeta/ai-check-skills
 ```
 
-After installation, restart Claude Code / Codex / OpenCode, or the assistant runtime you use, so the
-new skill is loaded.
+or ask your AI coding assistant to `Install HoneyMeta/ai-check-skills`. Restart the assistant afterwards
+so the new skill is loaded. Dependencies (Python 3.10+):
+`python -m pip install "python-docx>=1.1" "reportlab>=4"`.
 
 ### Quick Start
 

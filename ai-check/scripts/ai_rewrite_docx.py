@@ -4,18 +4,38 @@
 
 The script does not call AI. It only validates and applies replacement JSON
 created by the assistant after the user has approved the changes.
+
+Replacements are applied as a character-level diff inside the matched paragraph:
+unchanged characters keep their original runs, so formatting (bold, superscript
+citation marks, fonts), equations, images, fields and bookmarks elsewhere in the
+paragraph survive. With ``--track-changes`` the edits are written as Word
+revisions (w:ins / w:del) that can be accepted or rejected in Word.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
+import difflib
 import json
 import re
 import shutil
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from ai_check import iter_body_paragraph_elements, paragraph_units, w_tag  # noqa: E402
+
+XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+IGNORABLE_RE = re.compile(r"(?:\s| |​|‌|‍|⁠|⁣)")
+MIN_EQUAL_RUN = 3  # equal stretches shorter than this between two edits are folded into one edit
+REVISION_AUTHOR = "AI-check"
 
 
 @dataclass
@@ -25,6 +45,7 @@ class Replacement:
     chunkId: str = ""
     reason: str = ""
     occurrence: int | None = None
+    allowNumberChange: bool = False
 
 
 def load_json(path: Path) -> Any:
@@ -61,17 +82,21 @@ def normalize_replacements(payload: Any) -> list[Replacement]:
                 chunkId=str(item.get("chunkId") or "").strip(),
                 reason=str(item.get("reason") or "").strip(),
                 occurrence=int(occurrence) if occurrence is not None and str(occurrence).strip() else None,
+                allowNumberChange=bool(item.get("allowNumberChange")),
             )
         )
     return replacements
 
 
 def normalize_for_match(text: str) -> str:
-    return re.sub(r"(?:\s|\u00a0|\u200b|\u200c|\u200d|\u2060|\u2063)+", "", text or "")
+    return IGNORABLE_RE.sub("", text or "")
+
+
+CITATION_RE = re.compile(r"\[\d+(?:\s*[-–,，、]\s*\d+)*\]")
 
 
 def citation_marks(text: str) -> set[str]:
-    return set(re.findall(r"\[\d+(?:[-,，、]\d+)*\]", text or ""))
+    return set(CITATION_RE.findall(text or ""))
 
 
 def validate_replacement_citations(item: Replacement) -> list[str]:
@@ -81,86 +106,323 @@ def validate_replacement_citations(item: Replacement) -> list[str]:
     return missing
 
 
-def iter_all_paragraphs(document: Any) -> Iterable[Any]:
-    for paragraph in document.paragraphs:
-        yield paragraph
-    for table in document.tables:
-        yield from iter_table_paragraphs(table)
+def number_tokens(text: str) -> set[str]:
+    return set(re.findall(r"\d+(?:\.\d+)?", CITATION_RE.sub(" ", text or "")))
 
 
-def iter_table_paragraphs(table: Any) -> Iterable[Any]:
-    for row in table.rows:
-        for cell in row.cells:
-            for paragraph in cell.paragraphs:
-                yield paragraph
-            for nested in cell.tables:
-                yield from iter_table_paragraphs(nested)
+def validate_replacement_numbers(item: Replacement) -> list[str]:
+    """Numbers are facts: a rewrite must keep every number of the source unless explicitly allowed."""
+    if item.allowNumberChange:
+        return []
+    return sorted(number_tokens(item.sourceText) - number_tokens(item.replacementText), key=lambda n: (len(n), n))
+
+
+# ---------------------------------------------------------------------------
+# paragraph matching
+# ---------------------------------------------------------------------------
+
+
+def all_paragraphs(document: Any) -> list[Any]:
+    return list(iter_body_paragraph_elements(document, include_tables=True))
+
+
+def units_text(units: list[tuple[str, Any, int]]) -> str:
+    return "".join(char for char, _element, _offset in units)
+
+
+def locate_span(units: list[tuple[str, Any, int]], source: str) -> tuple[int, int] | None:
+    """Return the [start, end) unit range matching ``source`` (exact first, then whitespace-insensitive)."""
+    text = units_text(units)
+    start = text.find(source)
+    if start >= 0:
+        return start, start + len(source)
+    normalized_source = normalize_for_match(source)
+    if not normalized_source:
+        return None
+    kept = [index for index, (char, _element, _offset) in enumerate(units) if not IGNORABLE_RE.match(char)]
+    compact = "".join(units[index][0] for index in kept)
+    found = compact.find(normalized_source)
+    if found < 0:
+        return None
+    return kept[found], kept[found + len(normalized_source) - 1] + 1
 
 
 def find_matches(document: Any, item: Replacement) -> list[dict[str, Any]]:
-    source = item.sourceText
-    normalized_source = normalize_for_match(source)
     matches: list[dict[str, Any]] = []
-    for paragraph_index, paragraph in enumerate(iter_all_paragraphs(document)):
-        text = paragraph.text or ""
+    for paragraph_index, paragraph in enumerate(all_paragraphs(document)):
+        units = paragraph_units(paragraph)
+        text = units_text(units)
         if not text.strip():
             continue
-        direct = source in text
-        normalized = normalized_source and normalized_source in normalize_for_match(text)
-        if direct or normalized:
+        if locate_span(units, item.sourceText) is not None:
             matches.append(
                 {
                     "paragraphIndex": paragraph_index,
-                    "direct": direct,
+                    "direct": item.sourceText in text,
                     "paragraphText": text,
                 }
             )
     return matches
 
 
-def replace_normalized_once(paragraph_text: str, source_text: str, replacement_text: str) -> tuple[str, bool]:
-    if source_text in paragraph_text:
-        return paragraph_text.replace(source_text, replacement_text, 1), True
+# ---------------------------------------------------------------------------
+# run-level editing
+# ---------------------------------------------------------------------------
 
-    normalized_source = normalize_for_match(source_text)
-    if not normalized_source:
-        return paragraph_text, False
 
-    compact_to_original: list[int] = []
-    compact_chars: list[str] = []
-    for index, char in enumerate(paragraph_text):
-        if re.match(r"(?:\s|\u00a0|\u200b|\u200c|\u200d|\u2060|\u2063)", char):
+def make_run(rpr: Any, text: str) -> Any:
+    """A w:r with a copy of ``rpr`` holding ``text`` (tabs and line breaks become w:tab / w:br)."""
+    from docx.oxml import OxmlElement  # type: ignore
+
+    run = OxmlElement("w:r")
+    if rpr is not None:
+        run.append(copy.deepcopy(rpr))
+    for piece in re.split(r"([\t\n])", text):
+        if not piece:
             continue
-        compact_to_original.append(index)
-        compact_chars.append(char)
-    compact = "".join(compact_chars)
-    start = compact.find(normalized_source)
-    if start < 0:
-        return paragraph_text, False
-    end = start + len(normalized_source) - 1
-    original_start = compact_to_original[start]
-    original_end = compact_to_original[end] + 1
-    return paragraph_text[:original_start] + replacement_text + paragraph_text[original_end:], True
+        if piece == "\t":
+            run.append(OxmlElement("w:tab"))
+        elif piece == "\n":
+            run.append(OxmlElement("w:br"))
+        else:
+            t = OxmlElement("w:t")
+            t.text = piece
+            t.set(XML_SPACE, "preserve")
+            run.append(t)
+    return run
 
 
-def dry_run(source_docx: Path, replacements_path: Path) -> dict[str, Any]:
+def run_of(element: Any) -> Any:
+    parent = element
+    while parent is not None and parent.tag != w_tag("r"):
+        parent = parent.getparent()
+    return parent
+
+
+def explode_run(run: Any, created: list[Any]) -> None:
+    """Split a run into one run per visible character / non-text child so edits can address single characters."""
+    parent = run.getparent()
+    position = parent.index(run)
+    rpr = run.find(w_tag("rPr"))
+    pieces = []
+    for child in list(run):
+        if child.tag == w_tag("rPr"):
+            continue
+        if child.tag == w_tag("t"):
+            pieces.extend(make_run(rpr, char) for char in (child.text or ""))
+        else:
+            piece = make_run(rpr, "")
+            piece.append(copy.deepcopy(child))
+            pieces.append(piece)
+    parent.remove(run)
+    for offset, piece in enumerate(pieces):
+        parent.insert(position + offset, piece)
+    created.extend(pieces)
+
+
+def is_plain_run(run: Any, paragraph: Any) -> bool:
+    """Ordinary body text: not a superscript/subscript mark and not inside a hyperlink or field wrapper."""
+    rpr = run.find(w_tag("rPr"))
+    if rpr is not None and rpr.find(w_tag("vertAlign")) is not None:
+        return False
+    return run.getparent() is paragraph
+
+
+def coalesce_opcodes(opcodes: list[tuple[str, int, int, int, int]]) -> list[tuple[str, int, int, int, int]]:
+    """Fold tiny unchanged stretches (a lone 的 or ，) between two edits into one edit, so the
+    result reads as phrase-level changes instead of character confetti in Word's revision view."""
+    merged: list[tuple[str, int, int, int, int]] = []
+    index = 0
+    while index < len(opcodes):
+        tag, i1, i2, j1, j2 = opcodes[index]
+        if tag == "equal":
+            merged.append(opcodes[index])
+            index += 1
+            continue
+        end_i, end_j = i2, j2
+        cursor = index + 1
+        while cursor < len(opcodes):
+            next_tag, n_i1, n_i2, _n_j1, n_j2 = opcodes[cursor]
+            if next_tag != "equal":
+                end_i, end_j = n_i2, n_j2
+                cursor += 1
+            elif n_i2 - n_i1 < MIN_EQUAL_RUN and cursor + 1 < len(opcodes) and opcodes[cursor + 1][0] != "equal":
+                end_i, end_j = opcodes[cursor + 1][2], opcodes[cursor + 1][4]
+                cursor += 2
+            else:
+                break
+        kind = "insert" if i1 == end_i else "delete" if j1 == end_j else "replace"
+        merged.append((kind, i1, end_i, j1, end_j))
+        index = cursor
+    return merged
+
+
+class RevisionIds:
+    def __init__(self, document: Any) -> None:
+        ids = [0]
+        for element in document.element.iter():
+            value = element.get(w_tag("id"))
+            if value is not None and value.lstrip("-").isdigit():
+                ids.append(int(value))
+        self.next_id = max(ids) + 1
+        self.date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def wrapper(self, kind: str) -> Any:
+        from docx.oxml import OxmlElement  # type: ignore
+
+        element = OxmlElement(f"w:{kind}")
+        element.set(w_tag("id"), str(self.next_id))
+        element.set(w_tag("author"), REVISION_AUTHOR)
+        element.set(w_tag("date"), self.date)
+        self.next_id += 1
+        return element
+
+
+def mark_deleted(runs: list[Any], revisions: RevisionIds) -> Any:
+    """Wrap runs in w:del (grouping adjacent siblings), turn their w:t into w:delText, return the last wrapper."""
+    groups: list[list[Any]] = []
+    for run in runs:
+        if groups and groups[-1][-1].getnext() is run:
+            groups[-1].append(run)
+        else:
+            groups.append([run])
+    wrapper = None
+    for group in groups:
+        parent = group[0].getparent()
+        wrapper = revisions.wrapper("del")
+        parent.insert(parent.index(group[0]), wrapper)
+        for run in group:
+            wrapper.append(run)  # lxml moves the element
+            for t in run.findall(w_tag("t")):
+                t.tag = w_tag("delText")
+            for instr in run.findall(w_tag("instrText")):
+                instr.tag = w_tag("delInstrText")
+    return wrapper
+
+
+def merge_created_runs(paragraph: Any, created: list[Any]) -> None:
+    """Re-join the single-character runs created during editing when their formatting is identical."""
+    from lxml import etree  # type: ignore
+
+    ours = set(created)  # holding the elements keeps their lxml proxies (and identities) alive
+
+    def text_tag(run: Any) -> str | None:
+        tags = {child.tag for child in run if child.tag != w_tag("rPr")}
+        if len(tags) == 1 and tags <= {w_tag("t"), w_tag("delText")}:
+            return tags.pop()
+        return None
+
+    def rpr_key(run: Any) -> bytes:
+        rpr = run.find(w_tag("rPr"))
+        return etree.tostring(rpr) if rpr is not None else b""
+
+    for parent in [paragraph, *paragraph.iter()]:
+        previous = None
+        for child in list(parent):
+            tag = text_tag(child) if child.tag == w_tag("r") and child in ours else None
+            if tag and previous is not None and text_tag(previous) == tag and rpr_key(previous) == rpr_key(child):
+                target = previous.findall(tag)[-1]
+                for piece in child.findall(tag):
+                    target.text = (target.text or "") + (piece.text or "")
+                parent.remove(child)
+                continue
+            previous = child if tag else None
+
+
+def apply_to_paragraph(
+    paragraph: Any,
+    source_text: str,
+    replacement_text: str,
+    revisions: RevisionIds | None = None,
+) -> bool:
+    units = paragraph_units(paragraph)
+    span = locate_span(units, source_text)
+    if span is None:
+        return False
+    start, end = span
+
+    created: list[Any] = []
+    affected = []
+    for index in range(start, end):
+        run = run_of(units[index][1])
+        if run is not None and all(run is not seen for seen in affected):
+            affected.append(run)
+    for run in affected:
+        explode_run(run, created)
+    units = paragraph_units(paragraph)  # same text, now one run per character inside the span
+    span_runs = [run_of(units[index][1]) for index in range(start, end)]
+    original = units_text(units[start:end])
+
+    def new_node(style_run: Any, text: str) -> Any:
+        run = make_run(style_run.find(w_tag("rPr")) if style_run is not None else None, text)
+        created.append(run)
+        if revisions is None:
+            return run
+        wrapper = revisions.wrapper("ins")
+        wrapper.append(run)
+        return wrapper
+
+    matcher = difflib.SequenceMatcher(None, original, replacement_text, autojunk=False)
+    # Apply from the end so the runs before each edit are still untouched when it is applied.
+    for kind, i1, i2, j1, j2 in reversed(coalesce_opcodes(matcher.get_opcodes())):
+        if kind == "equal":
+            continue
+        new_text = replacement_text[j1:j2]
+        if kind == "insert":
+            prev_run = span_runs[i1 - 1] if i1 > 0 else None
+            next_run = span_runs[i1] if i1 < len(span_runs) else None
+            prefer_prev = prev_run is not None and (next_run is None or is_plain_run(prev_run, paragraph) or not is_plain_run(next_run, paragraph))
+            node = new_node(prev_run if prefer_prev else next_run, new_text)
+            if prefer_prev:
+                prev_run.addnext(node)
+            else:
+                next_run.addprevious(node)
+            continue
+        doomed = span_runs[i1:i2]
+        node = new_node(doomed[0], new_text) if kind == "replace" else None
+        if revisions is not None:
+            last_wrapper = mark_deleted(doomed, revisions)
+            if node is not None:
+                last_wrapper.addnext(node)  # deleted text first, then the inserted text
+        else:
+            if node is not None:
+                doomed[0].addprevious(node)
+            for run in doomed:
+                run.getparent().remove(run)
+
+    merge_created_runs(paragraph, created)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+
+
+def open_document(path: Path) -> Any:
     try:
         from docx import Document  # type: ignore
     except Exception as exc:  # pragma: no cover - depends on optional package
         raise RuntimeError("python-docx is required: python -m pip install python-docx") from exc
+    return Document(str(path))
 
-    document = Document(str(source_docx))
+
+def dry_run(source_docx: Path, replacements_path: Path) -> dict[str, Any]:
+    document = open_document(source_docx)
     replacements = normalize_replacements(load_json(replacements_path))
     items = []
     for item in replacements:
         matches = find_matches(document, item)
         missing_citations = validate_replacement_citations(item)
+        missing_numbers = validate_replacement_numbers(item)
+        unique = len(matches) == 1 or (item.occurrence is not None and 1 <= item.occurrence <= len(matches))
         items.append(
             {
                 "chunkId": item.chunkId,
                 "matchCount": len(matches),
                 "missingCitations": missing_citations,
-                "willApply": len(matches) > 0 and not missing_citations,
+                "missingNumbers": missing_numbers,
+                "willApply": unique and not missing_citations and not missing_numbers,
                 "matches": matches[:5],
             }
         )
@@ -173,28 +435,40 @@ def dry_run(source_docx: Path, replacements_path: Path) -> dict[str, Any]:
     }
 
 
-def apply_replacements(source_docx: Path, replacements_path: Path, output_docx: Path, dry_run_only: bool = False) -> dict[str, Any]:
-    try:
-        from docx import Document  # type: ignore
-    except Exception as exc:  # pragma: no cover - depends on optional package
-        raise RuntimeError("python-docx is required: python -m pip install python-docx") from exc
-
+def apply_replacements(
+    source_docx: Path,
+    replacements_path: Path,
+    output_docx: Path,
+    dry_run_only: bool = False,
+    track_changes: bool = False,
+) -> dict[str, Any]:
     preview = dry_run(source_docx, replacements_path)
     if dry_run_only:
         return preview
+    if output_docx.resolve() == source_docx.resolve():
+        raise ValueError("--out must be a new file; AI-check never modifies the original DOCX in place")
 
     replacements = normalize_replacements(load_json(replacements_path))
     skipped = []
     applied = []
-    temp_docx = output_docx
     output_docx.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source_docx, temp_docx)
-    document = Document(str(temp_docx))
+    shutil.copyfile(source_docx, output_docx)
+    document = open_document(output_docx)
+    revisions = RevisionIds(document) if track_changes else None
 
     for item in replacements:
         missing = validate_replacement_citations(item)
         if missing:
             skipped.append({"chunkId": item.chunkId, "reason": f"missing citation marks: {', '.join(missing)}"})
+            continue
+        missing_numbers = validate_replacement_numbers(item)
+        if missing_numbers:
+            skipped.append(
+                {
+                    "chunkId": item.chunkId,
+                    "reason": f"missing numbers: {', '.join(missing_numbers)} (set allowNumberChange only if the user approved it)",
+                }
+            )
             continue
 
         matches = find_matches(document, item)
@@ -208,29 +482,28 @@ def apply_replacements(source_docx: Path, replacements_path: Path, output_docx: 
             skipped.append({"chunkId": item.chunkId, "reason": "sourceText matched multiple paragraphs; set occurrence to apply deterministically"})
             continue
 
-        target_match = matches[(item.occurrence or 1) - 1]
-        target_index = target_match["paragraphIndex"]
-        for paragraph_index, paragraph in enumerate(iter_all_paragraphs(document)):
-            if paragraph_index != target_index:
-                continue
-            updated, ok = replace_normalized_once(paragraph.text or "", item.sourceText, item.replacementText)
-            if not ok:
-                skipped.append({"chunkId": item.chunkId, "reason": "normalized replacement failed"})
-                break
-            paragraph.text = updated
-            applied.append({"chunkId": item.chunkId, "paragraphIndex": paragraph_index})
-            break
+        target_index = matches[(item.occurrence or 1) - 1]["paragraphIndex"]
+        paragraph = all_paragraphs(document)[target_index]
+        if not apply_to_paragraph(paragraph, item.sourceText, item.replacementText, revisions):
+            skipped.append({"chunkId": item.chunkId, "reason": "replacement failed"})
+            continue
+        applied.append({"chunkId": item.chunkId, "paragraphIndex": target_index})
 
     document.save(str(output_docx))
     return {
         "sourcePath": str(source_docx.resolve()),
         "outputPath": str(output_docx.resolve()),
         "replacementPath": str(replacements_path.resolve()),
+        "trackChanges": track_changes,
         "appliedCount": len(applied),
         "skippedCount": len(skipped),
         "applied": applied,
         "skipped": skipped,
-        "note": "Paragraph formatting may be simplified for paragraphs whose text was replaced. Review the output DOCX before final use.",
+        "note": (
+            "Edits are written as Word tracked changes by AI-check; review and accept/reject them in Word."
+            if track_changes
+            else "Only the changed characters were rewritten; the rest of each paragraph keeps its runs and formatting. Review the output DOCX before final use."
+        ),
     }
 
 
@@ -243,7 +516,13 @@ def command_dry_run(args: argparse.Namespace) -> int:
 
 
 def command_apply(args: argparse.Namespace) -> int:
-    output = apply_replacements(Path(args.docx), Path(args.replacements_json), Path(args.out), dry_run_only=False)
+    output = apply_replacements(
+        Path(args.docx),
+        Path(args.replacements_json),
+        Path(args.out),
+        dry_run_only=False,
+        track_changes=args.track_changes,
+    )
     if args.out_json:
         write_json(Path(args.out_json), output)
     print(json.dumps(output, ensure_ascii=False, indent=2))
@@ -263,8 +542,9 @@ def build_parser() -> argparse.ArgumentParser:
     apply = sub.add_parser("apply", help="apply replacements to a new DOCX")
     apply.add_argument("docx")
     apply.add_argument("replacements_json")
-    apply.add_argument("--out", required=True, help="new DOCX path")
+    apply.add_argument("--out", required=True, help="new DOCX path (must differ from the source)")
     apply.add_argument("--out-json", help="write apply summary JSON")
+    apply.add_argument("--track-changes", action="store_true", help="write edits as Word tracked changes (w:ins/w:del)")
     apply.set_defaults(func=command_apply)
 
     return parser
@@ -282,4 +562,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
