@@ -101,7 +101,9 @@ Tables are skipped by default; add `--include-tables` when the user wants table 
 - Start at `medium` sensitivity.
 - Leave out titles, headings, keywords, tables of contents, references, cover pages, signatures, code
   and short metadata-like lines.
-- Fragments scored below 0.30 are recorded and stay out of the flagged list.
+- 0.30 is the rewrite line: a fragment at 0.30 or above already reads as AI-written to a careful reader.
+  Below 0.30 it is recorded and stays out of the flagged list; 0.30–0.59 is medium risk, 0.60 and above
+  high risk.
 - A high score needs concrete, revisable risks: trend openers, template transitions, contribution-list
   structure, uniformly smooth sentence rhythm, dense connectors, generic value claims, LLM-favoured
   vocabulary ("delve", "pivotal", "underscore", "seamless"), stacked dashes, the same goal stated twice,
@@ -125,6 +127,7 @@ Tables are skipped by default; add `--include-tables` when the user wants table 
 
 ## Revision Guidance
 
+- The goal of a revision is every fragment below 0.30. Rescan after rewriting and report the new scores.
 - Turn each fragment's reason and signals into rewrite goals.
 - Remove the actual risk signals. Making text smoother, more balanced or more formal keeps or raises the
   AI style.

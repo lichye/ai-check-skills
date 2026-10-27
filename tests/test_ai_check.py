@@ -531,3 +531,10 @@ def test_repeated_guard_phrase_is_flagged_across_chunks():
     assert len(chunks) == 2
     for chunk in chunks:
         assert any("repeated guard phrase: 'under the original assumptions'" in signal for signal in chunk["traceFeatures"]["riskSignals"])
+
+
+def test_risk_bands_start_at_the_rewrite_line():
+    assert ai_check.risk_band(0.29) == "low"
+    assert ai_check.risk_band(0.30) == "medium"
+    assert ai_check.risk_band(0.42) == "medium"
+    assert ai_check.risk_band(0.60) == "high"

@@ -14,7 +14,8 @@ Required visible fields:
 - Flagged character count and total character count
 - Flagged fragment distribution
 - A table with `Text` and `AI score` columns
-- Each flagged row shows `AI score: 0.xxx` in a stable text format and a risk label (low/medium/high)
+- Each flagged row shows `AI score: 0.xxx` in a stable text format and a risk label: medium for
+  0.30–0.59, high for 0.60 and above (fragments below 0.30 are low and stay out of the table)
 - The reason appears below the fragment text and never replaces it
 - Notes stating that the score is a reference judgement, unrelated to text quality, and not the output
   of any closed detector

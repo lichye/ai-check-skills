@@ -41,6 +41,12 @@ MAX_CHARS_PER_CHUNK = 900
 # so a concrete paragraph never inherits the score of a generic one next to it.
 MERGE_BELOW_CHARS = 200
 REPORT_MIN_VALUE = 0.30
+# Risk bands. Anything flagged (>= REPORT_MIN_VALUE) already reads as AI-written and needs a rewrite.
+HIGH_RISK_VALUE = 0.60
+
+
+def risk_band(value: float) -> str:
+    return "high" if value >= HIGH_RISK_VALUE else "medium" if value >= REPORT_MIN_VALUE else "low"
 REPORT_FRAGMENT_MAX_CHARS = 360
 REPORT_FRAGMENT_MIN_CHARS = 24
 DETECTION_SCOPE = (
@@ -1390,7 +1396,7 @@ def render_html(scan: dict[str, Any], rows: list[dict[str, Any]], summary: dict[
     title = str(scan.get("documentTitle") or "untitled")
     author = str(scan.get("author") or "unknown")
     distribution = "\n".join(
-        f'<span class="dist {"high" if row["result"].aiScore >= 0.75 else "medium" if row["result"].aiScore >= 0.45 else "low"}" style="height:{max(8, round(12 + row["result"].aiScore * 42))}px"></span>'
+        f'<span class="dist {risk_band(row["result"].aiScore)}" style="height:{max(8, round(12 + row["result"].aiScore * 42))}px"></span>'
         for row in rows
     )
     table_rows = "\n".join(
@@ -1518,9 +1524,10 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
         return fallback
 
     def risk_palette(value: float) -> tuple[str, Any, Any]:
-        if value >= 0.75:
+        band = risk_band(value)
+        if band == "high":
             return "High risk", colors.HexColor("#D93025"), colors.HexColor("#FDECEC")
-        if value >= 0.45:
+        if band == "medium":
             return "Medium risk", colors.HexColor("#B06000"), colors.HexColor("#FFF4D8")
         return "Low risk", colors.HexColor("#188038"), colors.HexColor("#E6F4EA")
 
