@@ -1,27 +1,8 @@
 {
   "results": [
-    {
-      "chunkId": "chunk-0001",
-      "sensitivity": "medium",
-      "aigcValue": 0.612,
-      "verdict": "suspicious",
-      "reason": "模板化收束和泛化意义判断明显，缺少具体实验或方法边界支撑",
-      "signals": [
-        "模板表达",
-        "泛化套话"
-      ]
-    },
-    {
-      "chunkId": "chunk-0002",
-      "sensitivity": "medium",
-      "aigcValue": 0.220,
-      "verdict": "human",
-      "reason": "有模型、实验、指标和引用支撑，不纳入报告",
-      "signals": [
-        "具体方法",
-        "定量结果"
-      ]
-    }
+    {"chunkId": "chunk-0001", "sensitivity": "medium", "aiScore": 0.88, "verdict": "ai", "reason": "Trend opener, three stacked connectors and a template closer; every sentence makes a generic claim with no team, date or number.", "signals": ["trend opener", "dense connectors", "LLM-favoured vocabulary", "uniform sentence rhythm"]},
+    {"chunkId": "chunk-0002", "sensitivity": "medium", "aiScore": 0.08, "verdict": "human", "reason": "Specific team size, dates and before/after metrics.", "signals": []},
+    {"chunkId": "chunk-0003", "sensitivity": "medium", "aiScore": 0.68, "verdict": "suspicious", "reason": "A not-only/but-also benefit list followed by a generic significance claim, with no link to the measurements above.", "signals": ["not-only/but-also", "generic value claims", "LLM-favoured vocabulary"]},
+    {"chunkId": "chunk-0004", "sensitivity": "medium", "aiScore": 0.10, "verdict": "human", "reason": "Concrete, author-specific limitations (team experience, hiring freeze, a fifth less review load).", "signals": []}
   ]
 }
-

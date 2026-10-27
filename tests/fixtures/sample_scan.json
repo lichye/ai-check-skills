@@ -1,68 +1,118 @@
 {
   "schemaVersion": 1,
   "tool": "AI-check",
-  "sourcePath": "sample.docx",
-  "documentTitle": "水声目标识别测试论文",
+  "sourcePath": "examples/remote-work.md",
+  "documentTitle": "Remote Work and Team Productivity",
   "author": "unknown",
-  "createdAt": "2026-06-05T00:00:00+08:00",
-  "totalChars": 150,
+  "createdAt": "2026-10-27T00:00:00+00:00",
+  "totalChars": 881,
+  "chunking": {
+    "maxCharsPerChunk": 900,
+    "minReportChars": 24
+  },
   "chunks": [
     {
       "chunkId": "chunk-0001",
       "sectionType": "body",
-      "sectionTitle": "1 绪论",
-      "text": "综上所述，水声目标识别研究具有重要意义，同时为后续智能化系统建设提供参考。",
-      "charCount": 37,
+      "sectionTitle": "1 Introduction",
+      "text": "In today's rapidly evolving workplace, remote work plays a pivotal role in shaping how teams collaborate. Moreover, it underscores the need for flexible tools. Furthermore, it is worth noting that organisations must navigate the complexities of distributed communication. In conclusion, remote work paves the way for a more seamless future of work.",
+      "charCount": 297,
       "importance": "medium",
       "traceFeatures": {
         "riskSignals": [
-          "模板表达:综上所述",
-          "泛化套话:重要意义套话"
+          "template phrase: In conclusion/summary",
+          "template phrase: It is worth noting",
+          "template phrase: In today's… opener",
+          "uniform sentence rhythm",
+          "generic claims: LLM-favoured vocabulary / crucial role"
         ],
         "mitigatingSignals": [],
         "templatePhrases": [
-          "综上所述"
+          "In conclusion/summary",
+          "It is worth noting",
+          "In today's… opener"
         ],
         "connectorCount": 2,
-        "connectorDensity": 1.0,
-        "sentenceCount": 1,
-        "sentenceLengthVariance": 0.0,
-        "uniformSentenceRhythm": false,
-        "genericClaimCount": 1,
+        "connectorDensity": 0.5,
+        "sentenceCount": 4,
+        "sentenceLengthVariance": 434.188,
+        "sentenceLengthCV": 0.281,
+        "uniformSentenceRhythm": true,
+        "genericClaimCount": 5,
         "evidenceMarkers": []
       }
     },
     {
       "chunkId": "chunk-0002",
       "sectionType": "body",
-      "sectionTitle": "2 方法",
-      "text": "本文采用 Transformer 与 CQT 特征构建识别模型，并在公开数据集上进行对比实验，准确率提升 2.1% [4]。",
-      "charCount": 58,
+      "sectionTitle": "2 What we measured",
+      "text": "We tracked 42 engineers across three time zones from March to June 2025. Median pull-request review time fell from 19 hours to 11 hours after we moved stand-ups to a written format, while the number of reopened tickets stayed flat at about 6% per sprint.",
+      "charCount": 210,
       "importance": "medium",
       "traceFeatures": {
         "riskSignals": [],
         "mitigatingSignals": [
-          "具体证据:引用编号",
-          "具体证据:实验指标",
-          "具体证据:模型或方法名",
-          "具体证据:实验结果表述",
-          "定量结果支撑"
+          "concrete evidence: metrics"
         ],
         "templatePhrases": [],
         "connectorCount": 0,
         "connectorDensity": 0.0,
-        "sentenceCount": 1,
-        "sentenceLengthVariance": 0.0,
+        "sentenceCount": 2,
+        "sentenceLengthVariance": 2025.0,
+        "sentenceLengthCV": 0.429,
         "uniformSentenceRhythm": false,
         "genericClaimCount": 0,
         "evidenceMarkers": [
-          "引用编号",
-          "实验指标",
-          "模型或方法名",
-          "实验结果表述"
+          "metrics"
         ]
+      }
+    },
+    {
+      "chunkId": "chunk-0003",
+      "sectionType": "body",
+      "sectionTitle": "3 Discussion",
+      "text": "Remote work not only improves flexibility but also enhances employee well-being, fosters innovation and drives long-term organisational success. These multifaceted benefits highlight its significant implications for the modern enterprise.",
+      "charCount": 210,
+      "importance": "medium",
+      "traceFeatures": {
+        "riskSignals": [
+          "template phrase: not only…but also",
+          "generic claims: LLM-favoured vocabulary / significant implications"
+        ],
+        "mitigatingSignals": [],
+        "templatePhrases": [
+          "not only…but also"
+        ],
+        "connectorCount": 0,
+        "connectorDensity": 0.0,
+        "sentenceCount": 2,
+        "sentenceLengthVariance": 484.0,
+        "sentenceLengthCV": 0.21,
+        "uniformSentenceRhythm": false,
+        "genericClaimCount": 2,
+        "evidenceMarkers": []
+      }
+    },
+    {
+      "chunkId": "chunk-0004",
+      "sectionType": "body",
+      "sectionTitle": "3 Discussion",
+      "text": "Two caveats limit what we can claim. The team was already experienced with asynchronous tools, and the period overlapped with a hiring freeze, so review load per person dropped by roughly a fifth.",
+      "charCount": 164,
+      "importance": "medium",
+      "traceFeatures": {
+        "riskSignals": [],
+        "mitigatingSignals": [],
+        "templatePhrases": [],
+        "connectorCount": 0,
+        "connectorDensity": 0.0,
+        "sentenceCount": 2,
+        "sentenceLengthVariance": 2704.0,
+        "sentenceLengthCV": 0.634,
+        "uniformSentenceRhythm": false,
+        "genericClaimCount": 0,
+        "evidenceMarkers": []
       }
     }
   ]
 }
-

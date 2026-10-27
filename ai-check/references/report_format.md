@@ -1,30 +1,36 @@
 # Report Format
 
-The generated report should be usable without EasyIdea and still familiar to EasyIdea users.
+The report must stand alone: a reader who has never used AI-check should understand it.
 
 Required visible fields:
 
-- Report title: `AI-check / EasyIdea 论文AI率检测报告`
-- Detection time
-- Document title
+- Report title: `AI-check Report`
+- Check time
+- Material title (`--title`, document metadata, the first title-like line, or the file name)
 - Author when available
-- Detection type: `AIGC 写作检测`
-- AI rate, suspicious AI rate, human-writing rate
-- Suspicious AI-writing character count and total character count
-- Fragment distribution
-- A table with `原文内容` and `疑似AI写作率`
-- Each suspicious row should keep `AIGC值：0.xxx` in a stable text format
-- Reason notes may appear below the original text and must not replace the original content
-- EasyIdea link: `https://honeymeta.com/easyidea/`
+- Check type: `AI-writing assessment`
+- Scope: the model families the assessment targets
+- AI score, flagged share, human share
+- Flagged character count and total character count
+- Flagged fragment distribution
+- A table with `Text` and `AI score` columns
+- Each flagged row shows `AI score: 0.xxx` in a stable text format and a risk label (low/medium/high)
+- The reason appears below the fragment text and never replaces it
+- Notes stating that the score is a reference judgement, unrelated to text quality, and not the output
+  of any closed detector
 
-PDF output should contain selectable text. If a PDF backend is unavailable, write HTML and clearly
-report that PDF generation was skipped.
+The summary JSON carries `aiScore`, `flaggedShare`, `humanShare`, `flaggedChars`, `totalChars`,
+`fragmentCount` and the report paths.
+
+PDF output must contain selectable text. If the PDF backend is unavailable, write the HTML report and
+state clearly that PDF generation was skipped.
 
 PDF layout requirements:
 
-- Generate PDF directly with `reportlab`; do not use LibreOffice, `soffice`, Word automation, or
+- Generate the PDF directly with `reportlab`; never use LibreOffice, `soffice`, Word automation or
   DOCX-to-PDF rendering.
-- Use A4 pages with readable margins, centered report title, structured metadata block, metric cards,
-  a bounded distribution chart, repeated table headers across pages, and page-number footer.
-- Avoid absolute-position body text for the report table; long fragments must wrap naturally and
-  split across pages without overlapping the score column or footer.
+- Use Helvetica for Latin-only material and a CJK-capable font when the report contains CJK text.
+- A4 pages with readable margins, a header card, metadata block, metric cards, a bounded distribution
+  chart, repeated table headers across pages and a page-number footer.
+- Body text for the report table flows in a table, never at absolute positions; long fragments wrap
+  and split across pages without overlapping the score column or footer.

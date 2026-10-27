@@ -31,10 +31,10 @@ def test_trace_features_are_evidence_not_probability():
 
     assert "riskSignals" in data
     assert "mitigatingSignals" in data
-    assert "aigcValue" not in data
+    assert "aiScore" not in data
     assert "score" not in data
-    assert any("模板表达" in signal or "泛化套话" in signal for signal in data["riskSignals"])
-    assert any("具体证据" in signal or "定量结果" in signal for signal in data["mitigatingSignals"])
+    assert any(signal.startswith(("template phrase", "generic claims")) for signal in data["riskSignals"])
+    assert any(signal.startswith(("concrete evidence", "quantified results")) for signal in data["mitigatingSignals"])
 
 
 def test_build_chunks_skips_keywords_titles_and_references():
@@ -85,7 +85,7 @@ def test_summarize_title_uses_probable_cover_title():
     assert ai_check.summarize_title(Path("AI测试.docx"), text) == "基于深度神经网络的轻量化与可解释水声目标识别研究"
 
 
-def test_report_keeps_import_friendly_aigc_value_and_link():
+def test_report_shows_ai_score_and_reason_in_english():
     scan = {
         "documentTitle": "测试论文",
         "author": "unknown",
@@ -103,10 +103,10 @@ def test_report_keeps_import_friendly_aigc_value_and_link():
         ai_check.Result(
             chunkId="chunk-0001",
             sensitivity="medium",
-            aigcValue=0.612,
+            aiScore=0.612,
             verdict="suspicious",
-            reason="泛化收束明显",
-            signals=["模板表达", "泛化套话"],
+            reason="Generic closing claim.",
+            signals=["template phrase", "generic claims"],
         )
     ]
 
@@ -114,11 +114,11 @@ def test_report_keeps_import_friendly_aigc_value_and_link():
     summary = ai_check.calculate_summary(scan, rows)
     rendered = ai_check.render_html(scan, rows, summary)
 
-    assert "AIGC值：0.612" in rendered
-    assert "原文内容" in rendered
-    assert "疑似AI写作率" in rendered
-    assert 'href="https://honeymeta.com/easyidea/"' in rendered
-    assert "泛化收束明显" in rendered
+    assert "AI score: 0.612" in rendered
+    assert "<th style=\"width:76%\">Text</th>" in rendered
+    assert "Reason: Generic closing claim. Signals: template phrase, generic claims." in rendered
+    assert "easyidea" not in rendered.lower()
+    assert summary["aiScore"] > 0 and "aiRate" not in summary
 
 
 def test_generate_report_writes_polished_pdf_without_libreoffice(tmp_path):
@@ -140,7 +140,7 @@ def test_generate_report_writes_polished_pdf_without_libreoffice(tmp_path):
             {
                 "chunkId": "chunk-0001",
                 "sensitivity": "medium",
-                "aigcValue": 0.612,
+                "aiScore": 0.612,
                 "verdict": "suspicious",
                 "reason": "泛化收束明显",
                 "signals": ["模板表达", "泛化套话"],
@@ -204,8 +204,8 @@ def test_english_text_is_split_and_signals_are_found():
         "In conclusion, this work paves the way for future research."
     )
     assert features.sentenceCount == 4
-    assert any(signal.startswith("模板表达") for signal in features.riskSignals)
-    assert any(signal.startswith("泛化套话") for signal in features.riskSignals)
+    assert any(signal.startswith("template phrase") for signal in features.riskSignals)
+    assert any(signal.startswith("generic claims") for signal in features.riskSignals)
     assert features.connectorCount >= 2
 
 
@@ -215,8 +215,8 @@ def test_report_fragments_keep_spaces_between_english_sentences():
 
 
 def test_results_accept_percentages_and_uppercase_enums():
-    results = ai_check.normalize_results([{"chunkId": "chunk-0001", "aigcValue": 85, "verdict": "AI", "sensitivity": "Medium"}])
-    assert results[0].aigcValue == 0.85
+    results = ai_check.normalize_results([{"chunkId": "chunk-0001", "aiScore": 85, "verdict": "AI", "sensitivity": "Medium"}])
+    assert results[0].aiScore == 0.85
     assert results[0].verdict == "ai"
 
 
@@ -362,7 +362,7 @@ def test_scan_reads_latex_project_directory(tmp_path):
         encoding="utf-8",
     )
 
-    data = ai_check.scan_docx(tmp_path)
+    data = ai_check.scan_source(tmp_path)
     chunks = data["chunks"]
     texts = " ".join(chunk["text"] for chunk in chunks)
 
@@ -385,8 +385,8 @@ def test_scan_latex_include_tables_keeps_rows_as_paragraphs(tmp_path):
         encoding="utf-8",
     )
 
-    without_tables = " ".join(chunk["text"] for chunk in ai_check.scan_docx(source)["chunks"])
-    with_tables = " ".join(chunk["text"] for chunk in ai_check.scan_docx(source, include_tables=True)["chunks"])
+    without_tables = " ".join(chunk["text"] for chunk in ai_check.scan_source(source)["chunks"])
+    with_tables = " ".join(chunk["text"] for chunk in ai_check.scan_source(source, include_tables=True)["chunks"])
 
     assert "Month one" not in without_tables
     assert "Month one establishes the baseline configurations done" in with_tables
@@ -396,8 +396,81 @@ def test_scan_latex_include_tables_keeps_rows_as_paragraphs(tmp_path):
 def test_scan_missing_latex_source_reports_path(tmp_path):
     missing = tmp_path / "missing.tex"
     try:
-        ai_check.scan_docx(missing)
+        ai_check.scan_source(missing)
     except RuntimeError as exc:
         assert "source not found" in str(exc)
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_results_accept_legacy_aigc_value_key():
+    results = ai_check.normalize_results([{"chunkId": "chunk-0001", "aigcValue": 0.4}])
+    assert results[0].aiScore == 0.4
+
+
+def test_scan_reads_markdown_headings_lists_and_skips_code(tmp_path):
+    source = tmp_path / "notes.md"
+    source.write_text(
+        "---\ntitle: ignored front matter\n---\n"
+        "## Background\n\n"
+        "Engineers choose **verification scopes** by hand, and the [manual](http://x.y) effort grows with each design.\n"
+        "The same paragraph continues on a soft-wrapped line here.\n\n"
+        "```python\nprint('hidden code block')\n```\n\n"
+        "| Col | Other |\n|-----|-------|\n| hidden table cell text | x |\n\n"
+        "- A list item that is long enough to survive the minimum fragment length filter.\n",
+        encoding="utf-8",
+    )
+
+    chunks = ai_check.scan_source(source)["chunks"]
+    texts = " ".join(chunk["text"] for chunk in chunks)
+
+    assert chunks[0]["sectionTitle"] == "1 Background"
+    assert "Engineers choose verification scopes by hand, and the manual effort" in texts
+    assert "soft-wrapped line here." in texts
+    assert "A list item that is long enough" in texts
+    for dropped in ("front matter", "hidden code", "hidden table", "**", "http://"):
+        assert dropped not in texts
+
+
+def test_scan_reads_plain_text_and_raw_text_as_prose():
+    text = (
+        "This email explains why the deployment slipped by two days last week.\n"
+        "The root cause was a misconfigured staging cluster.\n\n"
+        "We will add a pre-flight check so the same mistake cannot reach production again."
+    )
+    data = ai_check.scan_source(None, text=text, title="Status email")
+    texts = " ".join(chunk["text"] for chunk in data["chunks"])
+
+    assert data["documentTitle"] == "Status email"
+    assert "deployment slipped by two days last week. The root cause" in texts
+    assert "pre-flight check" in texts
+
+
+def test_scan_reads_html_without_scripts(tmp_path):
+    source = tmp_path / "post.html"
+    source.write_text(
+        "<html><head><title>x</title><script>var hidden = 1;</script></head><body>"
+        "<h2>Results</h2><p>Our method reduced verification time on both accelerator designs we tested.</p>"
+        "<p>It still fails on designs with multiple clock domains, which we leave to future work.</p>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    chunks = ai_check.scan_source(source)["chunks"]
+    texts = " ".join(chunk["text"] for chunk in chunks)
+
+    assert chunks[0]["sectionTitle"] == "1 Results"
+    assert "reduced verification time" in texts and "multiple clock domains" in texts
+    assert "hidden" not in texts
+
+
+def test_scan_reads_pdf_text(tmp_path):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    source = tmp_path / "paper.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=A4)
+    pdf.drawString(72, 760, "The prototype checks each module against its contract before composing proofs.")
+    pdf.save()
+
+    texts = " ".join(chunk["text"] for chunk in ai_check.scan_source(source)["chunks"])
+    assert "checks each module against its contract" in texts

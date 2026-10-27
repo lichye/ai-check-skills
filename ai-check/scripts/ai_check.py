@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AI-check deterministic DOCX/LaTeX scanner and report generator.
+"""AI-check: deterministic text scanner and AI-score report generator for any material.
 
 This script deliberately does not call any AI model and does not calculate final
-AI-writing probabilities. It extracts DOCX or LaTeX text, builds chunks, scans
+AI-writing probabilities. It extracts text from DOCX, LaTeX, Markdown, PDF, HTML or plain text, builds chunks, scans
 explainable trace features, and renders reports from assistant-provided results.
 """
 
@@ -37,34 +37,36 @@ Verdict = Literal["ai", "human", "suspicious"]
 
 
 MAX_CHARS_PER_CHUNK = 900
+# Paragraphs shorter than this are merged with short neighbours; longer ones are judged on their own,
+# so a concrete paragraph never inherits the score of a generic one next to it.
+MERGE_BELOW_CHARS = 200
 REPORT_MIN_VALUE = 0.30
 REPORT_FRAGMENT_MAX_CHARS = 360
 REPORT_FRAGMENT_MIN_CHARS = 24
-OFFICIAL_SITE = "https://honeymeta.com/easyidea/"
 DETECTION_SCOPE = (
-    "ChatGPT/GPT、Claude、Gemini、DeepSeek、通义千问 Qwen、豆包、Kimi、智谱 GLM、文心一言、"
-    "腾讯元宝/混元、MiniMax、讯飞星火、Grok 等大模型生成或润色的文本（包括但不限于）"
+    "Text generated or polished by large language models, including ChatGPT/GPT, Claude, Gemini, "
+    "DeepSeek, Qwen, Doubao, Kimi, GLM, ERNIE, Hunyuan, MiniMax, Spark and Grok"
 )
 
 
 TEMPLATE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("首先其次最后模板", re.compile(r"首先[\s\S]{0,120}其次[\s\S]{0,120}(?:最后|最终)")),
-    ("一是二是三是罗列", re.compile(r"一是[\s\S]{0,120}二是[\s\S]{0,120}三是")),
-    ("此外同时另外堆叠", re.compile(r"此外[\s\S]{0,120}同时[\s\S]{0,120}另外")),
-    ("一方面另一方面对称句", re.compile(r"一方面[\s\S]{0,120}另一方面")),
-    ("不仅而且对称句", re.compile(r"不仅[\s\S]{0,120}(?:而且|更|还|也)")),
-    ("综上所述", re.compile(r"综上所述")),
-    ("总而言之类收束", re.compile(r"总而言之|总的来说|综合来看|简而言之")),
-    ("由此可见", re.compile(r"由此可见")),
-    ("值得注意的是", re.compile(r"值得(?:注意|一提|关注)的是|需要指出的是|不难发现")),
-    ("不可否认", re.compile(r"不可否认")),
-    ("毋庸置疑", re.compile(r"毋庸置疑")),
-    ("显而易见", re.compile(r"显而易见")),
-    ("众所周知", re.compile(r"众所周知")),
-    ("不言而喻", re.compile(r"不言而喻")),
-    ("随着发展开头", re.compile(r"随着.{0,24}?的?(?:快速|飞速|迅猛|迅速|不断|持续|蓬勃)发展")),
-    ("背景浪潮套语", re.compile(r"在.{0,20}?(?:大背景|背景|浪潮|时代)下")),
-    # English academic prose
+    ("firstly/secondly/finally sequence (zh)", re.compile(r"首先[\s\S]{0,120}其次[\s\S]{0,120}(?:最后|最终)")),
+    ("numbered first/second/third list (zh)", re.compile(r"一是[\s\S]{0,120}二是[\s\S]{0,120}三是")),
+    ("stacked additive connectors (zh)", re.compile(r"此外[\s\S]{0,120}同时[\s\S]{0,120}另外")),
+    ("on-the-one-hand symmetry (zh)", re.compile(r"一方面[\s\S]{0,120}另一方面")),
+    ("not-only/but-also symmetry (zh)", re.compile(r"不仅[\s\S]{0,120}(?:而且|更|还|也)")),
+    ("in-summary closer (zh)", re.compile(r"综上所述")),
+    ("all-in-all closer (zh)", re.compile(r"总而言之|总的来说|综合来看|简而言之")),
+    ("it-follows-that closer (zh)", re.compile(r"由此可见")),
+    ("it-is-worth-noting filler (zh)", re.compile(r"值得(?:注意|一提|关注)的是|需要指出的是|不难发现")),
+    ("undeniably filler (zh)", re.compile(r"不可否认")),
+    ("beyond-doubt filler (zh)", re.compile(r"毋庸置疑")),
+    ("obviously filler (zh)", re.compile(r"显而易见")),
+    ("as-is-well-known filler (zh)", re.compile(r"众所周知")),
+    ("goes-without-saying filler (zh)", re.compile(r"不言而喻")),
+    ("with-the-rapid-development-of opener (zh)", re.compile(r"随着.{0,24}?的?(?:快速|飞速|迅猛|迅速|不断|持续|蓬勃)发展")),
+    ("against-the-backdrop-of opener (zh)", re.compile(r"在.{0,20}?(?:大背景|背景|浪潮|时代)下")),
+    # English prose
     ("In conclusion/summary", re.compile(r"\b(?:in conclusion|in summary|to sum up|all in all)\b", re.I)),
     ("It is worth noting", re.compile(r"\bit is (?:worth noting|important to note|noteworthy) that\b", re.I)),
     ("not only…but also", re.compile(r"\bnot only\b[\s\S]{0,120}\bbut also\b", re.I)),
@@ -97,19 +99,19 @@ EN_CONNECTOR_RE = re.compile(
 )
 
 GENERIC_CLAIM_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("重要意义套话", re.compile(r"(?:具有|具备).{0,12}(?:重要|重大).{0,12}(?:意义|价值)")),
-    ("广阔前景套话", re.compile(r"(?:广阔|良好).{0,8}(?:应用)?前景|前景(?:十分|非常)?广阔")),
-    ("理论实践价值套话", re.compile(r"理论价值.{0,12}现实意义|现实意义.{0,12}理论价值")),
-    ("高效可靠可信泛化目标", re.compile(r"(?:高效|可靠|可信|智能化|实用化).{0,18}(?:系统|框架|方案)")),
-    ("深入全面研究", re.compile(r"(?:深入|全面).{0,8}研究")),
-    ("一系列问题挑战", re.compile(r"一系列.{0,8}(?:问题|挑战)")),
-    ("赋能助力流行语", re.compile(r"赋能|助力|深度融合|全方位|多维度|新范式|新路径|新思路")),
-    ("关键作用套话", re.compile(r"发挥(?:着)?.{0,6}(?:重要|关键|不可替代|积极)(?:的)?作用|至关重要|举足轻重")),
-    ("支撑基础套话", re.compile(r"(?:提供|奠定)(?:了)?.{0,6}(?:有力|坚实|重要)(?:的)?(?:支撑|基础|保障)")),
-    ("日益凸显套话", re.compile(r"日益(?:增长|突出|凸显|重要|广泛|迫切)|愈发(?:重要|突出)")),
+    ("great-significance claim (zh)", re.compile(r"(?:具有|具备).{0,12}(?:重要|重大).{0,12}(?:意义|价值)")),
+    ("broad-prospects claim (zh)", re.compile(r"(?:广阔|良好).{0,8}(?:应用)?前景|前景(?:十分|非常)?广阔")),
+    ("theoretical-and-practical-value claim (zh)", re.compile(r"理论价值.{0,12}现实意义|现实意义.{0,12}理论价值")),
+    ("efficient-reliable-system goal (zh)", re.compile(r"(?:高效|可靠|可信|智能化|实用化).{0,18}(?:系统|框架|方案)")),
+    ("in-depth-study claim (zh)", re.compile(r"(?:深入|全面).{0,8}研究")),
+    ("series-of-challenges claim (zh)", re.compile(r"一系列.{0,8}(?:问题|挑战)")),
+    ("empower/boost buzzwords (zh)", re.compile(r"赋能|助力|深度融合|全方位|多维度|新范式|新路径|新思路")),
+    ("plays-a-key-role claim (zh)", re.compile(r"发挥(?:着)?.{0,6}(?:重要|关键|不可替代|积极)(?:的)?作用|至关重要|举足轻重")),
+    ("solid-foundation claim (zh)", re.compile(r"(?:提供|奠定)(?:了)?.{0,6}(?:有力|坚实|重要)(?:的)?(?:支撑|基础|保障)")),
+    ("increasingly-prominent claim (zh)", re.compile(r"日益(?:增长|突出|凸显|重要|广泛|迫切)|愈发(?:重要|突出)")),
     # English LLM-flavoured vocabulary; each hit is weak evidence only
     (
-        "LLM 高频词",
+        "LLM-favoured vocabulary",
         re.compile(
             r"\b(?:delve[sd]?|delving|tapestry|testament to|pivotal|underscor(?:e|es|ed|ing)|showcas(?:e|es|ed|ing)|"
             r"intricate|multifaceted|realm|seamless(?:ly)?|cutting-edge|ever-evolving|paving the way|"
@@ -129,22 +131,22 @@ METHOD_NAME_RE = re.compile(
 )
 
 EVIDENCE_MARKER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("引用编号", re.compile(r"\[\d+(?:\s*[-–,，、]\s*\d+)*\]|\([A-Z][A-Za-z-]+(?: et al\.)?,? \d{4}[a-z]?\)")),
+    ("citation markers", re.compile(r"\[\d+(?:\s*[-–,，、]\s*\d+)*\]|\([A-Z][A-Za-z-]+(?: et al\.)?,? \d{4}[a-z]?\)")),
     (
-        "实验指标",
+        "metrics",
         re.compile(
             r"\d+(?:\.\d+)?\s*(?:%|％|G\s*FLOPs?|FLOPs?|MB|GB|ms|s|Hz|kHz|MHz|dB|mAP|AUC|F1|BLEU|ROUGE|mIoU|PSNR|SSIM)(?![A-Za-z])",
             re.I,
         ),
     ),
-    ("统计量", re.compile(r"\bp\s*[<=>≤]\s*0?\.\d+|±|95\s*%\s*CI|\bn\s*=\s*\d+|标准差|置信区间")),
-    ("模型或方法名", METHOD_NAME_RE),
+    ("statistics", re.compile(r"\bp\s*[<=>≤]\s*0?\.\d+|±|95\s*%\s*CI|\bn\s*=\s*\d+|标准差|置信区间")),
+    ("named methods or models", METHOD_NAME_RE),
     (
-        "实验结果表述",
+        "experiment or result wording",
         re.compile(r"实验结果(?:表明|显示|验证)|准确率|召回率|计算复杂度|消融|对比实验|数据集|\b(?:ablation|baseline|dataset|benchmark)s?\b", re.I),
     ),
     (
-        "限定或取舍",
+        "scope or trade-off",
         re.compile(
             r"在.{0,18}(?:条件|场景|约束|限制)下|针对.{0,24}(?:问题|场景|任务)|本文(?:聚焦|采用|选取|限定)"
             r"|\b(?:under the (?:condition|assumption)|limited to|we (?:restrict|focus on|chose|choose|adopt))\b",
@@ -184,7 +186,7 @@ class Chunk:
 class Result:
     chunkId: str
     sensitivity: Sensitivity
-    aigcValue: float
+    aiScore: float
     verdict: Verdict
     reason: str
     signals: list[str]
@@ -274,12 +276,12 @@ def scan_trace_features(text: str) -> TraceFeatures:
     method_names = {match.group(0) for match in METHOD_NAME_RE.finditer(normalized)}
 
     risk_signals = [
-        *(f"模板表达:{label}" for label in template_phrases),
-        "句式节奏过于均匀" if uniform else "",
-        "连接词密集" if connector_density >= 0.45 and connector_count >= 3 else "",
-        "破折号偏多" if dash_count >= 2 else "",
-        f"泛化套话:{'/'.join(unique_limited(generic_labels, 3))}" if generic_count else "",
-        "贡献罗列结构"
+        *(f"template phrase: {label}" for label in template_phrases),
+        "uniform sentence rhythm" if uniform else "",
+        "dense connectors" if connector_density >= 0.45 and connector_count >= 3 else "",
+        "stacked dashes" if dash_count >= 2 else "",
+        f"generic claims: {' / '.join(unique_limited(generic_labels, 3))}" if generic_count else "",
+        "contribution-list structure"
         if re.search(
             r"主要研究工作如下|具体研究内容如下|本文(?:提出|构建|设计).{0,80}(?:方法|框架).{0,80}(?:实验结果|结果表明)"
             r"|\b(?:our|the main) contributions (?:are|of this (?:paper|work))\b",
@@ -287,17 +289,17 @@ def scan_trace_features(text: str) -> TraceFeatures:
             re.I,
         )
         else "",
-        "目标表述泛化" if re.search(r"(?:旨在|力求|致力于).{0,40}(?:高效|可靠|可信|智能化|实用化)", normalized) else "",
+        "generic goal statement" if re.search(r"(?:旨在|力求|致力于).{0,40}(?:高效|可靠|可信|智能化|实用化)", normalized) else "",
     ]
 
     mitigating = [
-        *(f"具体证据:{label}" for label in evidence_markers),
-        "领域方法细节" if len(method_names) >= 2 else "",
-        "定量结果支撑"
+        *(f"concrete evidence: {label}" for label in evidence_markers),
+        "domain method detail" if len(method_names) >= 2 else "",
+        "quantified results"
         if re.search(r"\d+(?:\.\d+)?\s*[%％]", normalized)
         and re.search(r"准确率|提升|降低|复杂度|FLOPs?|\b(?:improv|reduc|outperform|accuracy)", normalized, re.I)
         else "",
-        "限制条件说明"
+        "stated limitations"
         if re.search(r"(?:但|然而|不过).{0,40}(?:限制|不足|难以|约束|挑战)", normalized)
         or re.search(r"\b(?:however|but|although)\b.{0,80}\b(?:limit(?:ation|ed|s)?|cannot|fails?|constraints?|drawbacks?)\b", normalized, re.I)
         else "",
@@ -400,13 +402,21 @@ def is_toc_entry(text: str) -> bool:
     )
 
 
+def has_sentence_end(text: str) -> bool:
+    """CJK sentence punctuation, or an English sentence: eight or more words ending a clause with a full stop."""
+    text = text or ""
+    if re.search(r"[。！？!?；;]", text):
+        return True
+    return len(text.split()) >= 8 and bool(re.search(r"[A-Za-z0-9)\]][.](?:\s|$)", text))
+
+
 def is_cover_or_metadata(text: str) -> bool:
     compact = re.sub(r"\s+", "", text or "")
     if not compact or len(compact) <= 2:
         return True
     if re.search(r"原创性声明|授权声明|使用授权|版权|学位论文|毕业论文|学校代码|分类号|密级|学号|作者签名|导师签名|指导教师|学院|专业|研究方向|答辩委员会|论文题目|英文题目", compact):
         return True
-    if len(compact) <= 260 and not re.search(r"[。！？!?；;]", text or ""):
+    if len(compact) <= 260 and not has_sentence_end(text):
         return True
     return bool(re.fullmatch(r"摘要|中文摘要|Abstract|关键词|关键字|Keywords?|目录|目次|参考文献|References", compact, re.I))
 
@@ -494,6 +504,8 @@ def compact_chunks(chunks: list[Chunk], max_chars: int = MAX_CHARS_PER_CHUNK) ->
             and pending["importance"] == chunk.importance
             and (pending.get("sectionTitle") or "") == (chunk.sectionTitle or "")
             and count_chars(str(pending["text"])) + chunk.charCount <= max_chars
+            and count_chars(str(pending["text"])) < MERGE_BELOW_CHARS
+            and chunk.charCount < MERGE_BELOW_CHARS
         ):
             pending["text"] = f"{pending['text']}\n{chunk.text}"
             continue
@@ -694,8 +706,6 @@ def strip_tex_comments(src: str) -> str:
 
 
 def find_tex_main(path: Path) -> Path:
-    if not path.exists():
-        raise RuntimeError(f"source not found: {path}")
     if path.is_file():
         return path
     candidates = sorted(path.glob("*.tex"), key=lambda item: (item.name != "main.tex", item.name))
@@ -753,26 +763,36 @@ def read_tex_args(src: str, index: int) -> tuple[list[str], int]:
             return args, index
 
 
-class TexReader:
-    def __init__(self, include_tables: bool = False) -> None:
-        self.include_tables = include_tables
-        self.citations: dict[str, int] = {}
+class SectionNumberer:
+    """Turn source headings into "1 Title" / "1.2 Title" lines, the form build_chunks treats as headings."""
+
+    def __init__(self) -> None:
         self.section = 0
         self.subsection = 0
 
     def heading(self, title: str, level: int) -> str:
-        title = re.sub(r"\s+", " ", self.inline(title)).strip().rstrip(" .:-–—")
+        title = re.sub(r"\s+", " ", title).strip().rstrip(" .:-–—#")
         title = re.sub(r"[。！？!?；;]", "", title)
         if not title:
             return "\n"
         if TEX_SPECIAL_HEADINGS.match(title):
             return f"\n\n{title}\n\n"
-        if level == 1:
+        if level <= 1:
             self.section += 1
             self.subsection = 0
             return f"\n\n{self.section} {title}\n\n"
         self.subsection += 1
         return f"\n\n{self.section}.{self.subsection} {title}\n\n"
+
+
+class TexReader:
+    def __init__(self, include_tables: bool = False) -> None:
+        self.include_tables = include_tables
+        self.citations: dict[str, int] = {}
+        self.numberer = SectionNumberer()
+
+    def heading(self, title: str, level: int) -> str:
+        return self.numberer.heading(self.inline(title), level)
 
     def cite(self, keys: str) -> str:
         numbers = []
@@ -904,14 +924,137 @@ def read_tex_text(path: Path, include_tables: bool = False) -> tuple[str, dict[s
     return TexReader(include_tables=include_tables).read(body), metadata
 
 
-def is_tex_source(path: Path) -> bool:
-    return path.is_dir() or path.suffix.lower() == ".tex"
+# --- Markdown, HTML, PDF and plain text ---------------------------------------------------------
+
+MD_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+MD_TABLE_RULE_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$")
+
+
+def markdown_inline(text: str) -> str:
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"(\*\*|__|\*|_|~~|`)(?=\S)(.+?)(?<=\S)\1", r"\2", text)
+    return text
+
+
+def markdown_to_text(src: str, include_tables: bool = False) -> str:
+    src = re.sub(r"\A---\n.*?\n---\n", "", src, flags=re.S)  # YAML front matter
+    src = re.sub(r"^(```|~~~).*?^\1\s*$", "\n", src, flags=re.S | re.M)  # fenced code
+    src = re.sub(r"<!--.*?-->", "", src, flags=re.S)
+    numberer = SectionNumberer()
+    # A document with a single H1 uses it as its title; sections then start at H2.
+    single_title = len(re.findall(r"^\s{0,3}#\s+", src, flags=re.M)) == 1
+    out: list[str] = []
+    for line in src.splitlines():
+        heading = re.match(r"^\s{0,3}(#{1,6})\s+(.*)$", line)
+        if heading and single_title and len(heading.group(1)) == 1:
+            out.append(f"\n\n{markdown_inline(heading.group(2)).strip()}\n\n")
+        elif heading:
+            out.append(numberer.heading(markdown_inline(heading.group(2)), len(heading.group(1)) - 1 or 1))
+        elif MD_TABLE_RULE_RE.match(line):
+            continue
+        elif MD_TABLE_ROW_RE.match(line):
+            if include_tables:
+                out.append("\n" + " ".join(cell.strip() for cell in line.strip().strip("|").split("|")) + "\n")
+        elif re.match(r"^\s*(?:[-*+]|\d+[.)])\s+", line):
+            out.append("\n" + markdown_inline(re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", line)) + "\n")
+        elif re.match(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$", line):
+            out.append("\n")
+        else:
+            out.append(markdown_inline(re.sub(r"^\s*>\s?", "", line)))
+    return plain_text_paragraphs("\n".join(out))
+
+
+def html_to_text(src: str, include_tables: bool = False) -> str:
+    from html.parser import HTMLParser
+
+    class Extractor(HTMLParser):
+        skip_tags = {"script", "style", "noscript", "svg", "head", "nav", "footer"}
+        block_tags = {"p", "div", "section", "article", "li", "br", "blockquote", "tr", "pre", "ul", "ol"}
+
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.parts: list[str] = []
+            self.skip = 0
+            self.table = 0
+            self.numberer = SectionNumberer()
+            self.heading: list[str] | None = None
+
+        def handle_starttag(self, tag: str, attrs: Any) -> None:
+            if tag in self.skip_tags:
+                self.skip += 1
+            elif tag == "table":
+                self.table += 1
+            elif re.fullmatch(r"h[1-6]", tag):
+                self.heading = []
+            if tag in self.block_tags:
+                self.parts.append("\n\n")
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag in self.skip_tags:
+                self.skip = max(0, self.skip - 1)
+            elif tag == "table":
+                self.table = max(0, self.table - 1)
+            elif re.fullmatch(r"h[1-6]", tag) and self.heading is not None:
+                self.parts.append(self.numberer.heading("".join(self.heading), max(1, int(tag[1]) - 1)))
+                self.heading = None
+            if tag in self.block_tags or tag in ("td", "th"):
+                self.parts.append("\n\n" if tag != "td" and tag != "th" else " ")
+
+        def handle_data(self, data: str) -> None:
+            if self.skip or (self.table and not include_tables):
+                return
+            (self.heading if self.heading is not None else self.parts).append(data)
+
+    extractor = Extractor()
+    extractor.feed(src)
+    return plain_text_paragraphs("".join(extractor.parts))
+
+
+def plain_text_paragraphs(src: str) -> str:
+    """Blank lines separate paragraphs; single newlines inside a paragraph are soft wraps."""
+    src = re.sub(r"(?<=[A-Za-z])-\n(?=[a-z])", "", src.replace("\r\n", "\n").replace("\r", "\n"))
+    blocks = [re.sub(r"\s+", " ", block).strip() for block in re.split(r"\n\s*\n", src)]
+    return "\n".join(block for block in blocks if block)
+
+
+def read_pdf_text(path: Path) -> tuple[str, dict[str, str]]:
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception as exc:  # pragma: no cover - depends on optional package
+        raise RuntimeError("pypdf is required for reading PDF files: python -m pip install pypdf") from exc
+
+    reader = PdfReader(str(path))
+    pages = [page.extract_text() or "" for page in reader.pages]
+    info = reader.metadata or {}
+    metadata = {
+        "title": str(info.get("/Title") or "").strip(),
+        "author": str(info.get("/Author") or "").strip(),
+        "subject": str(info.get("/Subject") or "").strip(),
+    }
+    return plain_text_paragraphs("\n\n".join(pages)), metadata
+
+
+EMPTY_METADATA = {"title": "", "author": "", "subject": ""}
 
 
 def read_source_text(path: Path, include_tables: bool = False) -> tuple[str, dict[str, str]]:
-    if is_tex_source(path):
+    if not path.exists():
+        raise RuntimeError(f"source not found: {path}")
+    suffix = path.suffix.lower()
+    if path.is_dir() or suffix == ".tex":
         return read_tex_text(path, include_tables=include_tables)
-    return read_docx_text(path, include_tables=include_tables)
+    if suffix == ".docx":
+        return read_docx_text(path, include_tables=include_tables)
+    if suffix == ".pdf":
+        return read_pdf_text(path)
+    src = path.read_text(encoding="utf-8", errors="replace")
+    if suffix in (".md", ".markdown", ".mdx", ".rmd", ".qmd"):
+        return markdown_to_text(src, include_tables=include_tables), dict(EMPTY_METADATA)
+    if suffix in (".html", ".htm", ".xhtml"):
+        return html_to_text(src, include_tables=include_tables), dict(EMPTY_METADATA)
+    return plain_text_paragraphs(src), dict(EMPTY_METADATA)
 
 
 def is_probable_document_title(text: str) -> bool:
@@ -948,20 +1091,27 @@ def summarize_title(path: Path, text: str, explicit_title: str | None = None, me
     return path.stem or "untitled"
 
 
-def scan_docx(
-    path: Path,
+def scan_source(
+    path: Path | None,
     title: str | None = None,
     author: str | None = None,
     max_chars: int = MAX_CHARS_PER_CHUNK,
     include_tables: bool = False,
+    text: str | None = None,
 ) -> dict[str, Any]:
-    text, metadata = read_source_text(path, include_tables=include_tables)
+    """Scan a file or directory, or raw ``text`` (pasted material) when ``path`` is None."""
+    if path is None:
+        text, metadata = plain_text_paragraphs(text or ""), dict(EMPTY_METADATA)
+        source_path, title_path = "", Path(title or "pasted text")
+    else:
+        text, metadata = read_source_text(path, include_tables=include_tables)
+        source_path, title_path = str(path.resolve()), path
     chunks = build_chunks(text, max_chars=max_chars)
     return {
         "schemaVersion": 1,
         "tool": "AI-check",
-        "sourcePath": str(path.resolve()),
-        "documentTitle": summarize_title(path, text, explicit_title=title, metadata_title=metadata.get("title")),
+        "sourcePath": source_path,
+        "documentTitle": summarize_title(title_path, text, explicit_title=title, metadata_title=metadata.get("title")),
         "author": author or metadata.get("author") or "unknown",
         "createdAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "totalChars": sum(chunk.charCount for chunk in chunks),
@@ -997,14 +1147,15 @@ def normalize_results(payload: Any) -> list[Result]:
     for item in raw_results:
         if not isinstance(item, dict):
             raise ValueError("each result must be an object")
+        raw_score = item.get("aiScore", item.get("aigcValue"))  # aigcValue: legacy results files
         try:
-            value = float(item.get("aigcValue"))
+            value = float(raw_score)
         except (TypeError, ValueError):
-            raise ValueError(f"aigcValue missing or not a number for {item.get('chunkId')}") from None
+            raise ValueError(f"aiScore missing or not a number for {item.get('chunkId')}") from None
         if 1 < value <= 100:
             value = value / 100  # assistants sometimes answer 0-100 instead of 0-1
         if not math.isfinite(value) or value < 0 or value > 1:
-            raise ValueError(f"aigcValue must be 0..1 for {item.get('chunkId')}")
+            raise ValueError(f"aiScore must be 0..1 for {item.get('chunkId')}")
         sensitivity = str(item.get("sensitivity") or "medium").strip().lower()
         verdict = str(item.get("verdict") or "suspicious").strip().lower()
         if sensitivity not in ("low", "medium", "high"):
@@ -1018,7 +1169,7 @@ def normalize_results(payload: Any) -> list[Result]:
             Result(
                 chunkId=str(item.get("chunkId") or "").strip(),
                 sensitivity=sensitivity,  # type: ignore[arg-type]
-                aigcValue=round(value, 3),
+                aiScore=round(value, 3),
                 verdict=verdict,  # type: ignore[arg-type]
                 reason=str(item.get("reason") or "").strip(),
                 signals=[str(signal).strip() for signal in signals if str(signal).strip()],
@@ -1095,7 +1246,7 @@ def report_reason(result: Result) -> str:
     signals = [signal.strip() for signal in result.signals if signal.strip()]
     if not signals:
         return reason
-    return f"{reason} 信号：{'、'.join(signals)}" if reason else f"信号：{'、'.join(signals)}"
+    return f"{reason} Signals: {', '.join(signals)}." if reason else f"Signals: {', '.join(signals)}."
 
 
 def percent(value: float) -> str:
@@ -1112,7 +1263,7 @@ def get_report_rows(scan: dict[str, Any], results: list[Result]) -> list[dict[st
     seen: set[str] = set()
     for chunk in scan.get("chunks", []):
         result = result_by_chunk.get(str(chunk.get("chunkId") or ""))
-        if not result or result.aigcValue < REPORT_MIN_VALUE:
+        if not result or result.aiScore < REPORT_MIN_VALUE:
             continue
         if chunk.get("sectionType") not in ("abstract", "body", "conclusion"):
             continue
@@ -1131,14 +1282,14 @@ def calculate_summary(scan: dict[str, Any], rows: list[dict[str, Any]]) -> dict[
         total_chars = sum(int(chunk.get("charCount") or count_chars(str(chunk.get("text") or ""))) for chunk in scan.get("chunks", []))
     total_chars = max(1, total_chars)
     suspicious_chars = sum(count_chars(row["text"]) for row in rows)
-    weighted_score = sum(count_chars(row["text"]) * row["result"].aigcValue for row in rows)
+    weighted_score = sum(count_chars(row["text"]) * row["result"].aiScore for row in rows)
     ai_rate = weighted_score / total_chars
-    suspicious_ai_rate = suspicious_chars / total_chars
+    flagged_share = suspicious_chars / total_chars
     return {
-        "aiRate": round(max(0.0, min(1.0, ai_rate)), 4),
-        "suspiciousAiRate": round(max(0.0, min(1.0, suspicious_ai_rate)), 4),
-        "humanRate": round(max(0.0, min(1.0, 1 - ai_rate)), 4),
-        "suspiciousChars": suspicious_chars,
+        "aiScore": round(max(0.0, min(1.0, ai_rate)), 4),
+        "flaggedShare": round(max(0.0, min(1.0, flagged_share)), 4),
+        "humanShare": round(max(0.0, min(1.0, 1 - ai_rate)), 4),
+        "flaggedChars": suspicious_chars,
         "totalChars": total_chars,
         "fragmentCount": len(rows),
     }
@@ -1149,28 +1300,28 @@ def render_html(scan: dict[str, Any], rows: list[dict[str, Any]], summary: dict[
     title = str(scan.get("documentTitle") or "untitled")
     author = str(scan.get("author") or "unknown")
     distribution = "\n".join(
-        f'<span class="dist {"high" if row["result"].aigcValue >= 0.75 else "medium" if row["result"].aigcValue >= 0.45 else "low"}" style="height:{max(8, round(12 + row["result"].aigcValue * 42))}px"></span>'
+        f'<span class="dist {"high" if row["result"].aiScore >= 0.75 else "medium" if row["result"].aiScore >= 0.45 else "low"}" style="height:{max(8, round(12 + row["result"].aiScore * 42))}px"></span>'
         for row in rows
     )
     table_rows = "\n".join(
         f"""<tr>
   <td class="original">
     <div class="original-text">{html.escape(row["text"])}</div>
-    <div class="reason">检测原因：{html.escape(report_reason(row["result"]))}</div>
+    <div class="reason">Reason: {html.escape(report_reason(row["result"]))}</div>
   </td>
-  <td class="score">AIGC值：{row["result"].aigcValue:.3f}</td>
+  <td class="score">AI score: {row["result"].aiScore:.3f}</td>
 </tr>"""
         for row in rows
     )
     return f"""<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>AI-check / EasyIdea 论文AI率检测报告</title>
+  <title>AI-check Report</title>
   <style>
     @page {{ size: A4; margin: 18mm; }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; color: #202124; font-family: "Microsoft YaHei", "SimSun", "Noto Sans CJK SC", Arial, sans-serif; font-size: 12px; line-height: 1.65; }}
+    body {{ margin: 0; color: #202124; font-family: Arial, "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; font-size: 12px; line-height: 1.65; }}
     .page-title {{ text-align: center; font-size: 22px; font-weight: 700; margin: 2mm 0 8mm; }}
     .meta {{ display: grid; grid-template-columns: 1fr 1fr; gap: 2mm 8mm; border: 1px solid #d9d9d9; padding: 4mm 5mm; margin-bottom: 6mm; }}
     .section-title {{ background: #f2f4f7; border-left: 4px solid #4b89dc; font-size: 15px; font-weight: 700; padding: 2mm 3mm; margin: 5mm 0 3mm; }}
@@ -1186,43 +1337,40 @@ def render_html(scan: dict[str, Any], rows: list[dict[str, Any]], summary: dict[
     tr {{ break-inside: avoid; page-break-inside: avoid; }}
     th {{ background: #f7f7f7; font-weight: 700; }}
     th, td {{ border: 1px solid #d9d9d9; vertical-align: top; padding: 2.2mm 2.4mm; }}
-    td.original {{ width: 76%; word-break: break-all; }}
+    td.original {{ width: 76%; overflow-wrap: anywhere; }}
     .reason {{ margin-top: 1.6mm; color: #6b7280; font-size: 10.5px; line-height: 1.45; }}
     td.score {{ width: 24%; color: #d93025; white-space: nowrap; font-weight: 700; }}
     .notes {{ margin-top: 7mm; color: #4b5563; }}
-    .site-link {{ color: #1a73e8; text-decoration: underline; }}
   </style>
 </head>
 <body>
-  <h1 class="page-title">AI-check / EasyIdea 论文AI率检测报告</h1>
+  <h1 class="page-title">AI-check Report</h1>
   <section class="meta">
-    <div>检测时间：{html.escape(detection_time)}</div>
-    <div>检测文献：{html.escape(title)}</div>
-    <div>作者：{html.escape(author)}</div>
-    <div>检测类型：AIGC 写作检测</div>
-    <div>官网：<a class="site-link" href="{OFFICIAL_SITE}">{OFFICIAL_SITE}</a></div>
-    <div style="grid-column:1 / -1">检测范围：{html.escape(DETECTION_SCOPE)}</div>
+    <div>Checked at: {html.escape(detection_time)}</div>
+    <div>Material: {html.escape(title)}</div>
+    <div>Author: {html.escape(author)}</div>
+    <div>Check type: AI-writing assessment</div>
+    <div style="grid-column:1 / -1">Scope: {html.escape(DETECTION_SCOPE)}</div>
   </section>
-  <div class="section-title">检测结果</div>
+  <div class="section-title">Result</div>
   <section class="metrics">
-    <div class="metric"><strong>{percent(summary["aiRate"])}</strong><span>AI率</span></div>
-    <div class="metric"><strong>{percent(summary["suspiciousAiRate"])}</strong><span>疑似AI率</span></div>
-    <div class="metric"><strong>{percent(summary["humanRate"])}</strong><span>人写作率</span></div>
-    <div class="metric"><strong>[{summary["suspiciousChars"]}]</strong><span>疑似AI写作字数</span></div>
-    <div class="metric"><strong>[{summary["totalChars"]}]</strong><span>总字数</span></div>
+    <div class="metric"><strong>{percent(summary["aiScore"])}</strong><span>AI score</span></div>
+    <div class="metric"><strong>{percent(summary["flaggedShare"])}</strong><span>Flagged share</span></div>
+    <div class="metric"><strong>{percent(summary["humanShare"])}</strong><span>Human share</span></div>
+    <div class="metric"><strong>[{summary["flaggedChars"]}]</strong><span>Flagged chars</span></div>
+    <div class="metric"><strong>[{summary["totalChars"]}]</strong><span>Total chars</span></div>
   </section>
-  <div class="section-title">疑似片段分布图</div>
+  <div class="section-title">Flagged fragment distribution</div>
   <section class="distribution">{distribution}</section>
   <table>
-    <thead><tr><th style="width:76%">原文内容</th><th style="width:24%">疑似AI写作率</th></tr></thead>
+    <thead><tr><th style="width:76%">Text</th><th style="width:24%">AI score</th></tr></thead>
     <tbody>{table_rows}</tbody>
   </table>
   <section class="notes">
-    <p>说明：</p>
-    <p>本报告由 AI-check 根据当前助手逐段判断结果生成，AIGC值与文章质量无关，仅供参考。</p>
-    <p>本报告不代表知网、维普、Turnitin 或其他闭源平台检测结果。</p>
-    <p>疑似AI生成段落中的“片段”为检测自动划分，与原文自然段可能不同。</p>
-    <p>EasyIdea官网：<a class="site-link" href="{OFFICIAL_SITE}">{OFFICIAL_SITE}</a></p>
+    <p>Notes:</p>
+    <p>AI-check builds this report from the assistant's fragment-by-fragment judgements. The AI score is unrelated to the quality of the text and is for reference only.</p>
+    <p>It does not represent the output of Turnitin, GPTZero, CNKI or any other closed detector.</p>
+    <p>Fragments are split automatically and may differ from the paragraphs of the source.</p>
   </section>
 </body>
 </html>
@@ -1260,7 +1408,11 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
     except Exception as exc:  # pragma: no cover - depends on optional package
         raise RuntimeError("reportlab is required for PDF output: python -m pip install reportlab") from exc
 
-    def register_pdf_font() -> str:
+    def register_pdf_font(needs_cjk: bool) -> str:
+        if not needs_cjk:
+            # Latin-only material reads best in the built-in Helvetica family (with a real bold face).
+            pdfmetrics.registerFontFamily("Helvetica", normal="Helvetica", bold="Helvetica-Bold", italic="Helvetica-Oblique", boldItalic="Helvetica-BoldOblique")
+            return "Helvetica"
         # reportlab cannot load CFF-outline fonts (e.g. Noto Sans CJK .otf/.ttc, PingFang), so keep
         # trying candidates and fall back to the built-in STSong-Light CID font.
         for cjk_font in cjk_font_candidates():
@@ -1277,10 +1429,10 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
 
     def risk_palette(value: float) -> tuple[str, Any, Any]:
         if value >= 0.75:
-            return "高风险", colors.HexColor("#D93025"), colors.HexColor("#FDECEC")
+            return "High risk", colors.HexColor("#D93025"), colors.HexColor("#FDECEC")
         if value >= 0.45:
-            return "中风险", colors.HexColor("#B06000"), colors.HexColor("#FFF4D8")
-        return "低风险", colors.HexColor("#188038"), colors.HexColor("#E6F4EA")
+            return "Medium risk", colors.HexColor("#B06000"), colors.HexColor("#FFF4D8")
+        return "Low risk", colors.HexColor("#188038"), colors.HexColor("#E6F4EA")
 
     class DistributionBars(Flowable):
         def __init__(self, values: list[float], height: float = 22 * mm) -> None:
@@ -1318,7 +1470,12 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
                 self.canv.roundRect(x, base_y, bar_w, height, 1.2, stroke=0, fill=1)
                 x += bar_w + gap
 
-    font_name = register_pdf_font()
+    report_text = " ".join(
+        [str(scan.get("documentTitle") or ""), str(scan.get("author") or "")]
+        + [row["text"] + report_reason(row["result"]) for row in rows]
+    )
+    needs_cjk = bool(re.search(r"[\u3000-\u9fff\uac00-\ud7af\uff00-\uffef]", report_text))
+    font_name = register_pdf_font(needs_cjk)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     page_w, page_h = A4
@@ -1329,7 +1486,7 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
         leftMargin=16 * mm,
         topMargin=18 * mm,
         bottomMargin=16 * mm,
-        title="AI-check / EasyIdea 论文AI率检测报告",
+        title="AI-check Report",
         author="AI-check",
     )
 
@@ -1349,7 +1506,7 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
     soft_blue = colors.HexColor("#E8F0FE")
     soft_slate = colors.HexColor("#F8FAFC")
 
-    base = ParagraphStyle("AICheckBase", fontName=font_name, fontSize=9.1, leading=13.0, textColor=ink, alignment=TA_LEFT, wordWrap="CJK")
+    base = ParagraphStyle("AICheckBase", fontName=font_name, fontSize=9.1, leading=13.0, textColor=ink, alignment=TA_LEFT, wordWrap="CJK" if needs_cjk else None)
     title_style = ParagraphStyle("AICheckTitle", parent=base, fontSize=19.2, leading=24, alignment=TA_LEFT, textColor=colors.HexColor("#0F172A"), spaceAfter=1.3 * mm)
     subtitle_style = ParagraphStyle("AICheckSubtitle", parent=base, fontSize=8.7, leading=11.8, alignment=TA_LEFT, textColor=muted)
     meta_style = ParagraphStyle("AICheckMeta", parent=base, fontSize=8.2, leading=11.4, textColor=ink)
@@ -1395,11 +1552,13 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
 
     def header_card() -> Table:
         meta_data = [
-            [paragraph(f"检测时间：{detection_time}", meta_style), paragraph(f"检测文献：{title}", meta_style)],
-            [paragraph(f"作者：{author}", meta_style), paragraph("检测类型：AIGC 写作检测", meta_style)],
-            [paragraph("官网：AI-check / EasyIdea", meta_style), paragraph(f"检测范围：{scope}", meta_style)],
+            [paragraph(f"Checked at: {detection_time}", meta_style), paragraph(f"Material: {title}", meta_style)],
+            [paragraph(f"Author: {author}", meta_style), paragraph("Check type: AI-writing assessment", meta_style)],
+            [paragraph(f"Scope: {scope}", meta_style), ""],
         ]
-        meta_table = Table(meta_data, colWidths=[doc.width * 0.38, doc.width * 0.62], hAlign="LEFT")
+        # The header card's content column is doc.width minus the 4mm accent bar and 8pt padding on each side.
+        meta_width = doc.width - 4 * mm - 16
+        meta_table = Table(meta_data, colWidths=[meta_width * 0.38, meta_width * 0.62], hAlign="LEFT")
         meta_table.setStyle(
             TableStyle(
                 [
@@ -1416,10 +1575,10 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
             )
         )
         content = [
-            pill("AIGC 写作检测", blue_dark, colors.white),
+            pill("AI-writing assessment", blue_dark, colors.white),
             Spacer(1, 2.5 * mm),
-            Paragraph("AI-check / EasyIdea 论文AI率检测报告", title_style),
-            Paragraph("独立 DOCX 解析生成 · 可选择文本 PDF · 结果仅供参考", subtitle_style),
+            Paragraph("AI-check Report", title_style),
+            Paragraph("Independent text extraction · selectable-text PDF · for reference only", subtitle_style),
             Spacer(1, 3 * mm),
             meta_table,
         ]
@@ -1466,16 +1625,16 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
 
     def metric_table() -> Table:
         values = [
-            (percent(summary["aiRate"]), "AI率", red, soft_red),
-            (percent(summary["suspiciousAiRate"]), "疑似AI率", amber, soft_amber),
-            (percent(summary["humanRate"]), "人写作率", green, soft_green),
-            (str(summary["suspiciousChars"]), "疑似AI写作字数", red, soft_red),
-            (str(summary["totalChars"]), "总字数", blue_dark, soft_blue),
+            (percent(summary["aiScore"]), "AI score", red, soft_red),
+            (percent(summary["flaggedShare"]), "Flagged share", amber, soft_amber),
+            (percent(summary["humanShare"]), "Human share", green, soft_green),
+            (str(summary["flaggedChars"]), "Flagged chars", red, soft_red),
+            (str(summary["totalChars"]), "Total chars", blue_dark, soft_blue),
         ]
         value_cells = []
         label_cells = []
         for value, label, color, tint in values:
-            value_style = ParagraphStyle(f"AICheckMetricValue{label}", parent=metric_value_style, textColor=color)
+            value_style = ParagraphStyle(f"AICheckMetricValue{label.replace(' ', '')}", parent=metric_value_style, textColor=color)
             value_cells.append(Paragraph(safe(value), value_style))
             label_cells.append(Paragraph(safe(label), metric_label_style))
         table = Table([value_cells, label_cells], colWidths=[doc.width / 5] * 5, hAlign="LEFT")
@@ -1506,41 +1665,42 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
     title = str(scan.get("documentTitle") or "untitled")
     author = str(scan.get("author") or "unknown")
     scope = DETECTION_SCOPE
+    fragment_label = f"{summary['fragmentCount']} fragment{'' if summary['fragmentCount'] == 1 else 's'}"
 
     story: list[Any] = [
         header_card(),
         Spacer(1, 6 * mm),
-        section_title("检测结果"),
+        section_title("Result"),
         Spacer(1, 3 * mm),
         metric_table(),
         Spacer(1, 6 * mm),
-        section_title(f"疑似片段分布图（{summary['fragmentCount']} 段）"),
+        section_title(f"Flagged fragment distribution ({fragment_label})"),
         Spacer(1, 3 * mm),
-        DistributionBars([row["result"].aigcValue for row in rows]),
+        DistributionBars([row["result"].aiScore for row in rows]),
         Spacer(1, 2 * mm),
         Table(
-            [[pill("低风险", soft_green, green), pill("中风险", soft_amber, amber), pill("高风险", soft_red, red)]],
+            [[pill("Low risk", soft_green, green), pill("Medium risk", soft_amber, amber), pill("High risk", soft_red, red)]],
             colWidths=[doc.width / 3] * 3,
             hAlign="LEFT",
         ),
         Spacer(1, 2 * mm),
-        paragraph("柱形越高表示 AIGC 值越高，颜色由绿到红代表风险升高。", note_style),
+        paragraph("Taller bars mean higher AI scores; colour runs from green to red as risk rises.", note_style),
         Spacer(1, 6 * mm),
-        section_title(f"原文内容 / 疑似AI写作率（{summary['fragmentCount']} 段）"),
+        section_title(f"Text / AI score ({fragment_label})"),
         Spacer(1, 3 * mm),
     ]
 
-    table_data: list[list[Any]] = [[paragraph("原文内容", table_header_style), paragraph("疑似AI写作率", table_header_style)]]
+    table_data: list[list[Any]] = [[paragraph("Text", table_header_style), paragraph("AI score", table_header_style)]]
     for row in rows:
         result: Result = row["result"]
         reason = report_reason(result)
-        value = max(0.0, min(1.0, result.aigcValue))
+        value = max(0.0, min(1.0, result.aiScore))
         label, accent, tint = risk_palette(value)
         original_cell: list[Any] = [paragraph(row["text"], body_style)]
         if reason:
-            original_cell.extend([Spacer(1, 2), paragraph(f"检测原因：{reason}", reason_style)])
+            original_cell.extend([Spacer(1, 2), paragraph(f"Reason: {reason}", reason_style)])
         score = Paragraph(
-            f'<b>{label}</b><br/><font color="{accent.hexval()}">AIGC值：{value:.3f}</font>',
+            f'<b>{label}</b><br/><font color="{accent.hexval()}">AI score: {value:.3f}</font>',
             score_style,
         )
         table_data.append([original_cell, score])
@@ -1558,7 +1718,7 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
     ]
     for row_index in range(1, len(table_data)):
         result = rows[row_index - 1]["result"]
-        value = max(0.0, min(1.0, result.aigcValue))
+        value = max(0.0, min(1.0, result.aiScore))
         _, accent, tint = risk_palette(value)
         table_style_commands.extend(
             [
@@ -1571,12 +1731,11 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
     story.extend(
         [
             Spacer(1, 7 * mm),
-            section_title("说明"),
+            section_title("Notes"),
             Spacer(1, 2.5 * mm),
-            paragraph("本报告由 AI-check 根据当前助手逐段判断结果生成，AIGC值与文章质量无关，仅供参考。", note_style),
-            paragraph("本报告不代表知网、维普、Turnitin 或其他闭源平台检测结果。", note_style),
-            paragraph("疑似AI生成段落中的“片段”为检测自动划分，与原文自然段可能不同。", note_style),
-            paragraph(f"EasyIdea 官网：{OFFICIAL_SITE}", note_style),
+            paragraph("AI-check builds this report from the assistant's fragment-by-fragment judgements. The AI score is unrelated to the quality of the text and is for reference only.", note_style),
+            paragraph("It does not represent the output of Turnitin, GPTZero, CNKI or any other closed detector.", note_style),
+            paragraph("Fragments are split automatically and may differ from the paragraphs of the source.", note_style),
         ]
     )
 
@@ -1590,17 +1749,17 @@ def render_pdf(path: Path, scan: dict[str, Any], rows: list[dict[str, Any]], sum
         canvas_obj.line(0, page_h - header_h, page_w, page_h - header_h)
         canvas_obj.setFont(font_name, 7.6)
         canvas_obj.setFillColor(blue_dark)
-        canvas_obj.drawString(doc_obj.leftMargin, page_h - 5.6 * mm, "AI-check / EasyIdea")
+        canvas_obj.drawString(doc_obj.leftMargin, page_h - 5.6 * mm, "AI-check")
         canvas_obj.setFillColor(muted)
-        canvas_obj.drawRightString(page_w - doc_obj.rightMargin, page_h - 5.6 * mm, f"第 {doc_obj.page} 页")
+        canvas_obj.drawRightString(page_w - doc_obj.rightMargin, page_h - 5.6 * mm, f"Page {doc_obj.page}")
         footer_y = 10 * mm
         canvas_obj.setStrokeColor(colors.HexColor("#E5E7EB"))
         canvas_obj.setLineWidth(0.5)
         canvas_obj.line(doc_obj.leftMargin, footer_y + 4, page_w - doc_obj.rightMargin, footer_y + 4)
         canvas_obj.setFont(font_name, 7.5)
         canvas_obj.setFillColor(muted)
-        canvas_obj.drawString(doc_obj.leftMargin, footer_y - 1, "AI-check / EasyIdea · 参考报告")
-        canvas_obj.drawRightString(page_w - doc_obj.rightMargin, footer_y - 1, f"第 {doc_obj.page} 页")
+        canvas_obj.drawString(doc_obj.leftMargin, footer_y - 1, "AI-check · reference report")
+        canvas_obj.drawRightString(page_w - doc_obj.rightMargin, footer_y - 1, f"Page {doc_obj.page}")
         canvas_obj.restoreState()
 
     doc.build(story, onFirstPage=draw_page, onLaterPages=draw_page)
@@ -1613,9 +1772,9 @@ def generate_report(scan_path: Path, results_path: Path, out_dir: Path) -> dict[
     summary = calculate_summary(scan, rows)
     out_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    html_path = out_dir / f"AI-check-EasyIdea-AI-rate-report-{timestamp}.html"
-    pdf_path = out_dir / f"AI-check-EasyIdea-AI-rate-report-{timestamp}.pdf"
-    summary_path = out_dir / f"AI-check-EasyIdea-AI-rate-summary-{timestamp}.json"
+    html_path = out_dir / f"AI-check-report-{timestamp}.html"
+    pdf_path = out_dir / f"AI-check-report-{timestamp}.pdf"
+    summary_path = out_dir / f"AI-check-summary-{timestamp}.json"
 
     html_path.write_text(render_html(scan, rows, summary), encoding="utf-8", newline="\n")
     pdf_error = ""
@@ -1631,7 +1790,6 @@ def generate_report(scan_path: Path, results_path: Path, out_dir: Path) -> dict[
         "pdfPath": str(pdf_path.resolve()) if str(pdf_path) else "",
         "pdfError": pdf_error,
         "reportPath": str(pdf_path.resolve()) if str(pdf_path) else str(html_path.resolve()),
-        "easyIdea": OFFICIAL_SITE,
     }
     write_json(summary_path, output)
     output["summaryPath"] = str(summary_path.resolve())
@@ -1639,8 +1797,14 @@ def generate_report(scan_path: Path, results_path: Path, out_dir: Path) -> dict[
 
 
 def command_scan(args: argparse.Namespace) -> int:
-    source = Path(args.source)
-    data = scan_docx(source, title=args.title, author=args.author, max_chars=args.max_chars, include_tables=args.include_tables)
+    if args.text is not None or args.source == "-":
+        text = args.text if args.text is not None else sys.stdin.read()
+        data = scan_source(None, title=args.title, author=args.author, max_chars=args.max_chars, text=text)
+    elif args.source:
+        source = Path(args.source)
+        data = scan_source(source, title=args.title, author=args.author, max_chars=args.max_chars, include_tables=args.include_tables)
+    else:
+        raise ValueError("give a source path, '-' for stdin, or --text")
     if args.out:
         write_json(Path(args.out), data)
     print(json.dumps(data if not args.out else {"scanPath": str(Path(args.out).resolve()), "chunks": len(data["chunks"]), "totalChars": data["totalChars"]}, ensure_ascii=False, indent=2))
@@ -1662,11 +1826,16 @@ def command_features(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="AI-check deterministic DOCX scanner and report generator")
+    parser = argparse.ArgumentParser(description="AI-check: deterministic text scanner and AI-score report generator")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    scan = sub.add_parser("scan", help="read DOCX or LaTeX and write chunk/traceFeatures JSON")
-    scan.add_argument("source", help="source DOCX, .tex file, or LaTeX project directory (\\input/\\include are followed)")
+    scan = sub.add_parser("scan", help="read any material and write chunk/traceFeatures JSON")
+    scan.add_argument(
+        "source",
+        nargs="?",
+        help="DOCX, PDF, Markdown, HTML, plain-text or .tex file, a LaTeX project directory, or '-' for stdin",
+    )
+    scan.add_argument("--text", help="scan this text directly (pasted material)")
     scan.add_argument("--out", help="output scan JSON path")
     scan.add_argument("--title", help="override document title")
     scan.add_argument("--author", help="override author")
@@ -1674,7 +1843,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--include-tables", action="store_true", help="also scan text inside tables (skipped by default)")
     scan.set_defaults(func=command_scan)
 
-    report = sub.add_parser("report", help="render HTML/PDF report from scan JSON and assistant results JSON")
+    report = sub.add_parser("report", help="render the HTML/PDF AI-score report from scan JSON and assistant results JSON")
     report.add_argument("scan_json", help="scan JSON path")
     report.add_argument("results_json", help="assistant-provided results JSON path")
     report.add_argument("--out-dir", required=True, help="output directory")

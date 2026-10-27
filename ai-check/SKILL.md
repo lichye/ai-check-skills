@@ -1,106 +1,133 @@
 ---
 name: ai-check
-description: Generate reference AI-writing-rate reports for Word/DOCX files or LaTeX/Overleaf projects (Chinese or English academic writing) and, after explicit user confirmation, apply AI-assisted revisions to a new DOCX, optionally as Word tracked changes. Use when the user asks to check a paper's AI-writing rate (AI率/AIGC率), create an AI-rate PDF/HTML report, or reduce AI-writing style (降AI率) based on that report.
+description: Give any material an AI score — how likely it is that a large language model wrote or polished it. Works on documents, papers, proposals, theses, essays, reports, emails, web pages and pasted text, in English or Chinese, from DOCX, PDF, LaTeX/Overleaf, Markdown, HTML or plain text. Produces fragment-level scores with reasons and an HTML/PDF report, and after explicit user confirmation helps revise the flagged passages. Use when the user asks for an AI score, AI-writing check, AI rate, "does this read as AI-written", or wants to reduce AI-writing style.
 license: MIT
-compatibility: Requires Python 3.10+ with python-docx>=1.1 and reportlab>=4. No LibreOffice, Word automation or network access needed.
+compatibility: Requires Python 3.10+ with python-docx>=1.1 and reportlab>=4; PDF input also needs pypdf. No LibreOffice, Word automation or network access needed.
 ---
 
 # AI-check
 
-AI-check turns a DOCX or a LaTeX source (a `.tex` file or an Overleaf project directory) into a
-reference AI-writing-rate report, then optionally helps revise suspicious passages after the user confirms.
+AI-check gives any piece of writing an **AI score**: a 0–100% estimate of how much of it reads as
+written or polished by a large language model. The assistant judges each fragment; the bundled scripts
+extract text, collect deterministic evidence signals and render the report.
 
 ## Core Rules
 
-- Assistant-judged: you (the assistant) judge `aigcValue`, `verdict`, reasons, and rewrites in the
-  visible conversation. Bundled Python scripts only read/write DOCX, JSON, HTML/PDF, and
-  deterministic text signals; they never call a model or output a probability.
-- Independent document pipeline: do not use LibreOffice, `soffice`, Office automation, DOCX-to-PDF
-  rendering, or screenshot-based document rendering for AI-check reports. DOCX is read through
-  `python-docx`; PDF is produced directly with `reportlab` as selectable text.
-- Never claim alignment with CNKI, VIP, Turnitin, or any closed detector. Say the report is for
-  reference.
-- Do not modify the original DOCX in place. Write reports and rewritten DOCX files beside the source
-  or under a user-provided output directory (`ai_rewrite_docx.py` refuses `--out` equal to the source).
-- Ask for confirmation before applying revisions to Word.
-- Preserve facts, terminology, numbers, formulas, citation markers, and conclusion direction.
+- Assistant-judged: you (the assistant) set each fragment's `aiScore`, `verdict`, reason and signals in
+  the visible conversation. The scripts only read and write files and compute deterministic text signals;
+  they never call a model or output a probability.
+- The score is a reference judgement. Never claim it matches Turnitin, GPTZero, CNKI or any other closed
+  detector, and say so when you report it.
+- The score measures AI-writing style. It says nothing about the quality or correctness of the material.
+- Never modify the source in place. Reports and rewritten files go beside the source or into a
+  user-provided output directory.
+- Ask for confirmation before applying any revision.
+- Revisions preserve facts, terminology, numbers, formulas, citation markers and the direction of every
+  conclusion.
+
+## Inputs
+
+`scripts/ai_check.py scan` reads:
+
+| Input | How it is read |
+| --- | --- |
+| `.docx` | Body paragraphs in document order (content controls included). |
+| `.pdf` | Page text via `pypdf`; soft line wraps and hyphenation are joined. Scanned PDFs without a text layer yield nothing. |
+| `.tex` file or LaTeX/Overleaf project directory | The file with `\documentclass` (preferring `main.tex`), with `\input`/`\include` followed. `\section`-like commands (including custom wrappers such as `\tsection`), `\paragraph{..}` and leading `\textbf{Label.}` become headings; citations become `[n]`; comments, floats, display math, the bibliography and `\todo{..}` notes are dropped. |
+| `.md` / `.markdown` / `.qmd` / `.rmd` | `#` headings become sections; front matter, fenced code and HTML comments are dropped; links keep their text. |
+| `.html` / `.htm` | Visible text; `script`, `style`, `nav`, `footer` and `head` are dropped; `h1`–`h6` become sections. |
+| any other file | Plain UTF-8 text; blank lines separate paragraphs. |
+| `-` or `--text "..."` | Pasted material from stdin or the command line. |
+
+Tables are skipped by default; add `--include-tables` when the user wants table text judged.
 
 ## Workflow
 
 0. Use a Python 3.10+ interpreter (for example `python3.11` when the default `python3` is older).
-   If `python-docx` or `reportlab` is missing, run `<python> -m pip install --user "python-docx>=1.1" "reportlab>=4"`.
-   Do not run the scripts with `python -I` when the deps are in user site-packages: `-I` hides them.
-1. Run `scripts/ai_check.py scan <source> --out <scan.json>` to extract chunks in document order.
-   `<source>` is a `.docx`, a `.tex` file, or a LaTeX project directory. Feed LaTeX directly, with no
-   conversion to DOCX: the scanner picks the file with `\documentclass` (preferring `main.tex`),
-   follows `\input`/`\include`, uses `\section`-like commands (including custom wrappers such as
-   `\tsection`), `\paragraph{..}` and leading `\textbf{Label.}` as headings, numbers citations as
-   `[n]`, and drops comments, floats, display math, the bibliography and `\todo{..}` notes.
-   Tables are skipped by default; add `--include-tables` only if the user wants table text judged.
-2. Judge chunks in order. Use each chunk's `traceFeatures.riskSignals` and
-   `traceFeatures.mitigatingSignals` as evidence, but do not treat them as a score.
-3. Save a results JSON (one entry per judged chunk):
+   Install missing dependencies with `<python> -m pip install --user "python-docx>=1.1" "reportlab>=4" pypdf`.
+   Run the scripts without `-I` when the dependencies live in user site-packages: `-I` hides them.
+1. Extract fragments:
 
-   ```json
-   {"results": [{"chunkId": "chunk-0001", "sensitivity": "medium", "aigcValue": 0.62,
-                 "verdict": "suspicious", "reason": "模板化收束，缺少方法边界", "signals": ["模板表达", "泛化套话"]}]}
+   ```bash
+   <python> scripts/ai_check.py scan <source> --out <scan.json> [--title "..."] [--include-tables]
+   <python> scripts/ai_check.py scan --text "pasted material" --title "Email draft" --out <scan.json>
    ```
 
-   `aigcValue` is 0–1, `verdict` is `ai` / `suspicious` / `human`, `sensitivity` is `low` / `medium` / `high`.
-4. Run `scripts/ai_check.py report <scan.json> <results.json> --out-dir <dir>` to generate an
-   HTML report and a polished selectable-text PDF (A4, summary cards, distribution chart, repeated
-   table headers, page numbers).
-5. Show the report path and summary. Ask whether to revise the Word document.
-   For a LaTeX source, steps 6–8 do not apply: the rewrite script only writes DOCX. After the user
-   confirms, give each revision as `file:line` + original sentence + revised sentence, locating the
-   sentence in the `.tex` with grep. Edit the `.tex` files only when the user asks for that.
-6. If the user confirms a DOCX revision, prepare a replacements JSON from the report and source chunks:
+   For pasted material, write it to a file in a scratch directory or pass it with `--text`/stdin.
+2. Judge the chunks in order. Read each chunk's `traceFeatures.riskSignals` and
+   `traceFeatures.mitigatingSignals` as evidence; they are inputs to your judgement, never a score.
+3. Save a results JSON with one entry per judged chunk:
 
    ```json
-   {"replacements": [{"chunkId": "chunk-0001", "sourceText": "原文中的一句或一段（逐字复制）",
-                      "replacementText": "改写后的文字", "reason": "去掉模板化收束"}]}
+   {"results": [{"chunkId": "chunk-0001", "sensitivity": "medium", "aiScore": 0.62,
+                 "verdict": "suspicious", "reason": "Trend opener and a stated goal repeated twice.",
+                 "signals": ["trend opener", "repeated goal"]}]}
    ```
 
-   `sourceText` must be copied verbatim from the chunk text (whitespace differences are tolerated).
-   Add `"occurrence": N` when the same text appears in several paragraphs.
-7. Run `scripts/ai_rewrite_docx.py dry-run <docx> <replacements.json>` and fix every item whose
-   `willApply` is false (not found, ambiguous, missing citation marks or missing numbers).
-8. Run `scripts/ai_rewrite_docx.py apply <docx> <replacements.json> --out <new.docx> --track-changes`
-   so the user can accept or reject each edit in Word. Omit `--track-changes` only if the user wants
-   a clean copy. Only the changed characters are rewritten; formatting, superscript citations,
-   equations, images and fields elsewhere in the paragraph are preserved.
+   `aiScore` is 0–1 (0–100 is also accepted), `verdict` is `ai` / `suspicious` / `human`,
+   `sensitivity` is `low` / `medium` / `high`. Write reasons in the language the user writes in.
+4. Render the report:
+
+   ```bash
+   <python> scripts/ai_check.py report <scan.json> <results.json> --out-dir <dir>
+   ```
+
+   It writes an HTML report, a selectable-text A4 PDF and a summary JSON. The summary's `aiScore` is the
+   headline number: flagged characters weighted by their fragment scores, over all characters.
+   `flaggedShare` is the share of characters in fragments scored 0.30 or higher.
+5. Tell the user the AI score, the few fragments that drive it (with the concrete signals), and the
+   report path. Ask whether they want revisions.
+
+## Revising after confirmation
+
+- **DOCX**: build a replacements JSON, check it, then write a new file as Word tracked changes.
+
+  ```json
+  {"replacements": [{"chunkId": "chunk-0001", "sourceText": "a sentence copied verbatim from the chunk",
+                     "replacementText": "the revised sentence", "reason": "remove the trend opener"}]}
+  ```
+
+  Run `scripts/ai_rewrite_docx.py dry-run <docx> <replacements.json>` and fix every item whose
+  `willApply` is false (not found, ambiguous, dropped citation or number). Add `"occurrence": N` when the
+  same text appears more than once. Then run
+  `scripts/ai_rewrite_docx.py apply <docx> <replacements.json> --out <new.docx> --track-changes`.
+  Formatting, superscript citations, equations, images and fields outside the changed characters are kept.
+- **Every other format** (LaTeX, Markdown, HTML, plain text, PDF, pasted text): give each revision as
+  location (`file:line` where a file exists) + original sentence + revised sentence. Edit the source files
+  only when the user asks for that, and rescan afterwards to report the new score.
 
 ## Detection Guidance
 
-- Initial sensitivity is `medium`.
-- Do not include titles, keywords, table-of-contents entries, references, cover pages, declarations,
-  or short metadata-like text in the final report.
-- `aigcValue < 0.30` is recorded but not shown as a suspicious report fragment.
-- High scores require concrete, revisable risks: template phrases, contribution-list style,
-  uniformly smooth rhythm, dense connectors, generic value claims or buzzwords (赋能/助力/至关重要,
-  "pivotal", "underscore", "delve"), stacked dashes, missing boundaries, or weak source-specific
-  evidence.
-- Do not score high only because the writing is academic, technical, citation-heavy, or structurally
-  orderly. Citations, model names, metrics, statistics, experiments, data, limitations, and concrete
-  method details are mitigating signals.
-- For `aigcValue >= 0.70`, include at least two risk signals and explain why mitigating signals do
-  not fully offset them.
+- Start at `medium` sensitivity.
+- Leave out titles, headings, keywords, tables of contents, references, cover pages, signatures, code
+  and short metadata-like lines.
+- Fragments scored below 0.30 are recorded and stay out of the flagged list.
+- A high score needs concrete, revisable risks: trend openers, template transitions, contribution-list
+  structure, uniformly smooth sentence rhythm, dense connectors, generic value claims, LLM-favoured
+  vocabulary ("delve", "pivotal", "underscore", "seamless"), stacked dashes, the same goal stated twice,
+  missing boundaries, or claims with no source-specific evidence.
+- Formal, technical, citation-heavy or well-organised writing is no evidence of AI on its own. Citations,
+  named methods, metrics, statistics, experiment details, data, stated limitations and author-specific
+  detail are mitigating signals.
+- For `aiScore >= 0.70`, name at least two risk signals and explain why the mitigating signals do not
+  offset them.
+- Match the genre: an email, a grant proposal and a novel chapter each have their own normal register.
+  Judge against what a human writer of that genre would produce.
 
 ## Revision Guidance
 
-- Read the report reason/signals and convert them into rewrite goals.
-- Medium rewriting should remove the actual risk signals rather than making text smoother and more
-  templated.
-- For generic value claims, lower the tone and add boundaries from the source context.
-- For contribution-list style, vary sentence rhythm and integrate claims into local context.
-- For dense connectors or uniform rhythm, reduce obvious connectors and allow natural variation.
-- If the source lacks evidence, do not invent evidence. Use limitation, scope, or author-choice
-  language instead.
-- Keep every citation marker and every number. The rewrite script skips replacements that drop a
-  citation such as `[4]` or a number such as `2.1`; set `"allowNumberChange": true` on an item only
-  when the user explicitly approved changing that number.
+- Turn each fragment's reason and signals into rewrite goals.
+- Remove the actual risk signals. Making text smoother, more balanced or more formal keeps or raises the
+  AI style.
+- Lower the tone of generic value claims and add boundaries taken from the source context.
+- Break contribution-list structure by varying sentence rhythm and tying claims to local context.
+- Cut obvious connectors and let sentence length vary naturally.
+- When the source lacks evidence, write limitation, scope or author-choice language; never invent evidence.
+- Keep every citation marker and every number. The DOCX rewrite script skips replacements that drop a
+  citation such as `[4]` or a number such as `2.1`; set `"allowNumberChange": true` on an item only when
+  the user explicitly approved changing that number.
 
 ## References
 
-- Read `references/ai_rate_signals.md` for the shared risk/mitigation signal vocabulary.
-- Read `references/report_format.md` when changing report output expectations.
+- `references/ai_score_signals.md`: the shared risk and mitigating signal vocabulary.
+- `references/report_format.md`: what the report must contain; read it before changing report output.
