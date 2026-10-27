@@ -18,12 +18,36 @@ never an automatic probability. Each one is weak on its own; a high score needs 
   and reliable systems, a series of challenges, with no local detail.
 - Generic closure: a paragraph ends on broad praise or a one-size-fits-all conclusion.
 - Repeated goal: the same aim stated twice in a short passage ("We aim to…" … "Our goal is to…").
-- Missing boundary: no limitation, condition, method choice, data source or local context.
+- Missing context: no method choice, data source or local detail behind the claim.
 - LLM-favoured vocabulary: "delve", "tapestry", "pivotal", "underscore", "showcase", "intricate",
   "multifaceted", "realm", "seamless", "cutting-edge", "paving the way", "shed light on",
   "plays a crucial role", "significant implications".
 - Stacked dashes: two or more em dashes used as clause glue in one passage.
 - Triplets: lists of exactly three parallel items used as rhetoric, repeated across sentences.
+
+## Over-defense
+
+Writing that argues against an imagined objection. One precise, necessary boundary is evidence; a stack of
+guards is a template. The scanner reports `over-defense: <kinds>` when guards, contrasts and disclaimers
+reach two or more and at least one per two sentences, plus two document-level signals.
+
+- Negation contrast: "rather than", "instead of", "as opposed to", "and not", "not X but Y"
+  (而不是, 而非, 不是…而是, 并非…而是). A claim built by ruling out an alternative nobody proposed.
+- Guard clause: "only when", "only if", "if and only if", "provided that", "as long as", "unless",
+  "under the … assumptions" (仅当, 只有…才, 前提是, 在…假设下).
+- Disclaimer: "we do not claim", "this does not mean", "note that", "it should be noted",
+  "we stress that", "importantly," (需要指出, 并不意味着).
+- Stacked hedges: two or more of "may", "might", "potentially", "arguably", "to some extent",
+  "aims to", "tends to" in one passage (可能, 或许, 在一定程度上, 旨在).
+- Stacked qualifiers: three or more of "the original / full / entire / supplied / global / same …" on
+  one sentence ("a counterexample to the original property on the full RTL under the original
+  assumptions"). Unbounded defense of a specific detail.
+- Restated obvious condition: "reports the specification as proved only when every property has a
+  proof". The reader already assumes it; saying it reads as pre-empting a reviewer.
+- Repeated guard phrase (document level): the same four-word guard such as "under the original
+  assumptions" in two or more places.
+- Repeated sentence opener: half or more of the sentences start with the same two words
+  ("The tool … It … The tool …"); common in procedural over-explanation.
 
 ## Chinese Risk Patterns
 
@@ -40,10 +64,13 @@ Typical surface forms: 首先…其次…最后, 一是…二是…三是, 综�
 - Named methods, models or tools (CamelCase and acronyms); two or more distinct names in one passage add
   `domain method detail`.
 - Experiment traces: datasets, baselines, ablations, benchmarks, evaluation protocol, failure cases.
-- Explicit scope or limitations: constraints, scenarios, chosen method boundaries, author trade-offs.
+- Concrete limitations stated once: a specific constraint, scenario or author trade-off tied to this
+  work ("the period overlapped with a hiring freeze"). Inside an over-defended passage they stop counting.
 - Author-specific detail: dates, names, places, first-hand events that only the author would know.
 
 ## Self-consistency Rule
 
 A revision must remove the risk signals that caused the high score. A revision that only makes prose
-more formal, smoother and more balanced keeps or raises the AI style and counts as a failure.
+more formal, smoother and more balanced keeps or raises the AI style and counts as a failure. So does a
+revision that answers a flag by adding caveats, contrasts or disclaimers: that trades one AI habit for
+over-defense.

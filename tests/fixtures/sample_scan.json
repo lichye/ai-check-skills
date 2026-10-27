@@ -39,7 +39,9 @@
         "sentenceLengthCV": 0.281,
         "uniformSentenceRhythm": true,
         "genericClaimCount": 5,
-        "evidenceMarkers": []
+        "evidenceMarkers": [],
+        "defenseMarkers": [],
+        "defenseCount": 0
       }
     },
     {
@@ -64,7 +66,9 @@
         "genericClaimCount": 0,
         "evidenceMarkers": [
           "metrics"
-        ]
+        ],
+        "defenseMarkers": [],
+        "defenseCount": 0
       }
     },
     {
@@ -90,7 +94,11 @@
         "sentenceLengthCV": 0.21,
         "uniformSentenceRhythm": false,
         "genericClaimCount": 2,
-        "evidenceMarkers": []
+        "evidenceMarkers": [],
+        "defenseMarkers": [
+          "negation contrast"
+        ],
+        "defenseCount": 1
       }
     },
     {
@@ -111,7 +119,9 @@
         "sentenceLengthCV": 0.634,
         "uniformSentenceRhythm": false,
         "genericClaimCount": 0,
-        "evidenceMarkers": []
+        "evidenceMarkers": [],
+        "defenseMarkers": [],
+        "defenseCount": 0
       }
     }
   ]

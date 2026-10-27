@@ -123,6 +123,54 @@ GENERIC_CLAIM_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("significant implications", re.compile(r"\b(?:significant|profound|far-reaching) (?:implications|potential)\b|\bbroad (?:application )?prospects\b", re.I)),
 ]
 
+# Over-defense: writing that argues against an imagined objection. One precise boundary is evidence;
+# several guards, contrasts and disclaimers per sentence are an AI-writing habit.
+DEFENSE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "negation contrast",
+        re.compile(
+            r"\b(?:rather than|instead of|as opposed to|and not|but not)\b|\bnot\s+(?:\w+\s+){0,6}?\w+,?\s+but\b"
+            r"|而(?:不是|非)|不是[^。！？]{0,30}而是|并非[^。！？]{0,30}而是",
+            re.I,
+        ),
+    ),
+    (
+        "guard clause",
+        re.compile(
+            r"\b(?:only (?:when|if)|if and only if|provided that|as long as|subject to|unless)\b"
+            r"|\bunder (?:the |its |their )?(?:[\w-]+ ){0,2}(?:assumptions?|conditions?|constraints?)\b"
+            r"|仅当|只有[^。！？]{0,30}才|当且仅当|前提是|在[^。！？]{0,20}(?:假设|前提|条件)下",
+            re.I,
+        ),
+    ),
+    (
+        "disclaimer",
+        re.compile(
+            r"\b(?:we do not claim|we make no claim|this (?:is not to say|does not (?:mean|imply))|is not intended to"
+            r"|it should be noted|note that|we (?:stress|emphasi[sz]e) that|to be clear|importantly,|crucially,)"
+            r"|需要(?:指出|强调)|值得强调|并不意味着|并不声称",
+            re.I,
+        ),
+    ),
+    (
+        "hedge",
+        re.compile(
+            r"\b(?:may|might|potentially|possibly|arguably|to some extent|to the extent that|in principle"
+            r"|aims? to|is intended to|tends? to|largely|relatively)\b|可能|或许|在一定程度上|旨在|相对而言",
+            re.I,
+        ),
+    ),
+]
+# Qualifiers that pin a detail down again ("the original property on the full RTL under the original
+# assumptions"); three or more on one sentence is unbounded defence of a detail.
+DETAIL_QUALIFIER_RE = re.compile(
+    r"\b(?:the|its|their|each|every|all) (?:original|full|entire|whole|supplied|global|same|complete|exact|underlying)\b"
+    r"|原始|完整的|全部的|同一",
+    re.I,
+)
+# Four-word guard phrases: preposition + determiner + two words ("under the original assumptions").
+GUARD_PHRASE_RE = re.compile(r"\b(?:under|against|within|on|subject to) (?:the|its|their) [\w'-]+ [\w'-]+\b", re.I)
+
 METHOD_NAME_RE = re.compile(
     r"\b(?:CNN|RNN|LSTM|GRU|Transformer|BERT|GPT-?\d*|ResNet-?\d*|U-?Net|YOLO\w*|ViT|Grad-CAM|XGBoost|SVM|CQT|MFCC|"
     r"BSCQT|DCAM|DCAMNet|AB-CQT|DFAM|DFAMNet)\b"
@@ -169,6 +217,8 @@ class TraceFeatures:
     uniformSentenceRhythm: bool
     genericClaimCount: int
     evidenceMarkers: list[str]
+    defenseMarkers: list[str]
+    defenseCount: int
 
 
 @dataclass
@@ -275,6 +325,21 @@ def scan_trace_features(text: str) -> TraceFeatures:
     )
     method_names = {match.group(0) for match in METHOD_NAME_RE.finditer(normalized)}
 
+    defense_counts = {label: pattern_count(normalized, pattern) for label, pattern in DEFENSE_PATTERNS}
+    # Hedges are common in honest prose; they count toward over-defense only from the second one on.
+    defense_count = sum(count for label, count in defense_counts.items() if label != "hedge") + max(0, defense_counts["hedge"] - 1)
+    stacked = sum(1 for sentence in sentences if pattern_count(sentence, DETAIL_QUALIFIER_RE) >= 3)
+    if stacked:
+        defense_counts["stacked qualifiers"] = stacked
+        defense_count += 2 * stacked
+    defense_markers = [label for label, count in defense_counts.items() if count]
+    over_defense = bool(sentences) and defense_count >= 2 and defense_count / len(sentences) >= 0.5
+
+    openers = [" ".join(re.findall(r"[A-Za-z']+", sentence)[:2]).lower() for sentence in sentences]
+    openers = [opener for opener in openers if opener]
+    top_opener = max(set(openers), key=openers.count) if openers else ""
+    repeated_opener = len(sentences) >= 3 and openers.count(top_opener) >= 2 and openers.count(top_opener) / len(sentences) >= 0.5
+
     risk_signals = [
         *(f"template phrase: {label}" for label in template_phrases),
         "uniform sentence rhythm" if uniform else "",
@@ -289,6 +354,8 @@ def scan_trace_features(text: str) -> TraceFeatures:
             re.I,
         )
         else "",
+        f"over-defense: {' / '.join(defense_markers)}" if over_defense else "",
+        f"repeated sentence opener: '{top_opener}'" if repeated_opener else "",
         "generic goal statement" if re.search(r"(?:旨在|力求|致力于).{0,40}(?:高效|可靠|可信|智能化|实用化)", normalized) else "",
     ]
 
@@ -305,6 +372,10 @@ def scan_trace_features(text: str) -> TraceFeatures:
         else "",
     ]
 
+    if over_defense:
+        # Boundaries buried in a stack of guards are part of the problem, not evidence against it.
+        mitigating = [item for item in mitigating if not item.startswith(("concrete evidence: scope", "stated limitations"))]
+
     return TraceFeatures(
         riskSignals=unique_limited(risk_signals),
         mitigatingSignals=unique_limited(mitigating),
@@ -317,6 +388,8 @@ def scan_trace_features(text: str) -> TraceFeatures:
         uniformSentenceRhythm=uniform,
         genericClaimCount=generic_count,
         evidenceMarkers=evidence_markers,
+        defenseMarkers=defense_markers,
+        defenseCount=defense_count,
     )
 
 
@@ -1107,6 +1180,7 @@ def scan_source(
         text, metadata = read_source_text(path, include_tables=include_tables)
         source_path, title_path = str(path.resolve()), path
     chunks = build_chunks(text, max_chars=max_chars)
+    mark_repeated_guard_phrases(chunks)
     return {
         "schemaVersion": 1,
         "tool": "AI-check",
@@ -1118,6 +1192,22 @@ def scan_source(
         "chunking": {"maxCharsPerChunk": max_chars, "minReportChars": REPORT_FRAGMENT_MIN_CHARS},
         "chunks": [chunk_to_dict(chunk) for chunk in chunks],
     }
+
+
+def mark_repeated_guard_phrases(chunks: list[Chunk], min_uses: int = 2) -> None:
+    """Flag chunks that reuse a guard phrase ("under the original assumptions") the material repeats."""
+    uses: dict[str, int] = {}
+    per_chunk: list[set[str]] = []
+    for chunk in chunks:
+        found = [re.sub(r"\s+", " ", match.group(0).lower()) for match in GUARD_PHRASE_RE.finditer(chunk.text)]
+        for phrase in found:
+            uses[phrase] = uses.get(phrase, 0) + 1
+        per_chunk.append(set(found))
+    for chunk, phrases in zip(chunks, per_chunk):
+        repeated = sorted(phrase for phrase in phrases if uses[phrase] >= min_uses)
+        if repeated:
+            signal = f"repeated guard phrase: '{repeated[0]}' ({uses[repeated[0]]}x in material)"
+            chunk.traceFeatures.riskSignals = unique_limited([*chunk.traceFeatures.riskSignals, signal])
 
 
 def chunk_to_dict(chunk: Chunk) -> dict[str, Any]:

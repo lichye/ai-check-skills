@@ -105,10 +105,19 @@ Tables are skipped by default; add `--include-tables` when the user wants table 
 - A high score needs concrete, revisable risks: trend openers, template transitions, contribution-list
   structure, uniformly smooth sentence rhythm, dense connectors, generic value claims, LLM-favoured
   vocabulary ("delve", "pivotal", "underscore", "seamless"), stacked dashes, the same goal stated twice,
-  missing boundaries, or claims with no source-specific evidence.
+  over-defense, or claims with no source-specific evidence.
+- Over-defense is a risk signal in its own right: writing that argues against an imagined objection.
+  It shows up as negation contrasts ("rather than", "instead of", "not X but Y"), guard clauses
+  ("only when", "under the original assumptions", "provided that"), disclaimers ("we do not claim",
+  "note that"), stacked hedges, several qualifiers pinned onto one detail ("the original property on the
+  full RTL under the original assumptions"), and the same guard phrase repeated across paragraphs.
+  Restating a condition the reader already assumes ("proved only when every proof holds") is
+  over-defense. Unbounded defense of a specific detail is one of the most irritating AI-writing habits;
+  score it like any other template.
 - Formal, technical, citation-heavy or well-organised writing is no evidence of AI on its own. Citations,
-  named methods, metrics, statistics, experiment details, data, stated limitations and author-specific
-  detail are mitigating signals.
+  named methods, metrics, statistics, experiment details, data and author-specific detail are mitigating
+  signals. A limitation counts as mitigating when it is concrete and stated once ("the team was already
+  experienced with asynchronous tools"); boundaries inside an over-defended passage are part of the risk.
 - For `aiScore >= 0.70`, name at least two risk signals and explain why the mitigating signals do not
   offset them.
 - Match the genre: an email, a grant proposal and a novel chapter each have their own normal register.
@@ -119,10 +128,12 @@ Tables are skipped by default; add `--include-tables` when the user wants table 
 - Turn each fragment's reason and signals into rewrite goals.
 - Remove the actual risk signals. Making text smoother, more balanced or more formal keeps or raises the
   AI style.
-- Lower the tone of generic value claims and add boundaries taken from the source context.
+- Lower the tone of generic value claims by replacing them with what the source actually did or measured.
 - Break contribution-list structure by varying sentence rhythm and tying claims to local context.
 - Cut obvious connectors and let sentence length vary naturally.
-- When the source lacks evidence, write limitation, scope or author-choice language; never invent evidence.
+- For over-defense, delete guards the reader already assumes, state each necessary condition once and
+  positively, and write the claim as a plain fact. A rewrite never adds caveats, contrasts or disclaimers.
+- When the source lacks evidence, shrink the claim to what the source supports; never invent evidence.
 - Keep every citation marker and every number. The DOCX rewrite script skips replacements that drop a
   citation such as `[4]` or a number such as `2.1`; set `"allowNumberChange": true` on an item only when
   the user explicitly approved changing that number.
