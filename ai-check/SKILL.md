@@ -1,14 +1,14 @@
 ---
 name: ai-check
-description: Generate reference AI-writing-rate reports for Word/DOCX files (Chinese or English academic writing) and, after explicit user confirmation, apply AI-assisted revisions to a new DOCX, optionally as Word tracked changes. Use when the user asks to check a paper's AI-writing rate (AI率/AIGC率), create an AI-rate PDF/HTML report, or reduce AI-writing style (降AI率) based on that report.
+description: Generate reference AI-writing-rate reports for Word/DOCX files or LaTeX/Overleaf projects (Chinese or English academic writing) and, after explicit user confirmation, apply AI-assisted revisions to a new DOCX, optionally as Word tracked changes. Use when the user asks to check a paper's AI-writing rate (AI率/AIGC率), create an AI-rate PDF/HTML report, or reduce AI-writing style (降AI率) based on that report.
 license: MIT
 compatibility: Requires Python 3.10+ with python-docx>=1.1 and reportlab>=4. No LibreOffice, Word automation or network access needed.
 ---
 
 # AI-check
 
-AI-check turns a DOCX into a reference AI-writing-rate report, then optionally helps revise
-suspicious passages after the user confirms.
+AI-check turns a DOCX or a LaTeX source (a `.tex` file or an Overleaf project directory) into a
+reference AI-writing-rate report, then optionally helps revise suspicious passages after the user confirms.
 
 ## Core Rules
 
@@ -27,8 +27,15 @@ suspicious passages after the user confirms.
 
 ## Workflow
 
-0. If `python-docx` or `reportlab` is missing, run `python -m pip install "python-docx>=1.1" "reportlab>=4"`.
-1. Run `scripts/ai_check.py scan <docx> --out <scan.json>` to extract chunks in document order.
+0. Use a Python 3.10+ interpreter (for example `python3.11` when the default `python3` is older).
+   If `python-docx` or `reportlab` is missing, run `<python> -m pip install --user "python-docx>=1.1" "reportlab>=4"`.
+   Do not run the scripts with `python -I` when the deps are in user site-packages: `-I` hides them.
+1. Run `scripts/ai_check.py scan <source> --out <scan.json>` to extract chunks in document order.
+   `<source>` is a `.docx`, a `.tex` file, or a LaTeX project directory. Feed LaTeX directly, with no
+   conversion to DOCX: the scanner picks the file with `\documentclass` (preferring `main.tex`),
+   follows `\input`/`\include`, uses `\section`-like commands (including custom wrappers such as
+   `\tsection`), `\paragraph{..}` and leading `\textbf{Label.}` as headings, numbers citations as
+   `[n]`, and drops comments, floats, display math, the bibliography and `\todo{..}` notes.
    Tables are skipped by default; add `--include-tables` only if the user wants table text judged.
 2. Judge chunks in order. Use each chunk's `traceFeatures.riskSignals` and
    `traceFeatures.mitigatingSignals` as evidence, but do not treat them as a score.
@@ -44,7 +51,10 @@ suspicious passages after the user confirms.
    HTML report and a polished selectable-text PDF (A4, summary cards, distribution chart, repeated
    table headers, page numbers).
 5. Show the report path and summary. Ask whether to revise the Word document.
-6. If the user confirms, prepare a replacements JSON from the report and source chunks:
+   For a LaTeX source, steps 6–8 do not apply: the rewrite script only writes DOCX. After the user
+   confirms, give each revision as `file:line` + original sentence + revised sentence, locating the
+   sentence in the `.tex` with grep. Edit the `.tex` files only when the user asks for that.
+6. If the user confirms a DOCX revision, prepare a replacements JSON from the report and source chunks:
 
    ```json
    {"replacements": [{"chunkId": "chunk-0001", "sourceText": "原文中的一句或一段（逐字复制）",

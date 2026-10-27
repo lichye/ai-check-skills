@@ -336,3 +336,68 @@ def test_apply_skips_rewrites_that_drop_numbers(tmp_path):
     result = ai_rewrite.apply_replacements(source, replacements, out)
     assert result["appliedCount"] == 0
     assert "missing numbers: 2.1" in result["skipped"][0]["reason"]
+
+
+def test_scan_reads_latex_project_directory(tmp_path):
+    (tmp_path / "sections").mkdir()
+    (tmp_path / "main.tex").write_text(
+        "\\documentclass{article}\n"
+        "\\title{A \\emph{Test} Paper}\n"
+        "\\newcommand{\\tsection}[2]{\\section*{#1}\\label{#2}}\n"
+        "\\begin{document}\n"
+        "\\noindent\\textbf{Abstract -}\n"
+        "We study $O(n^2)$ algorithms for nested {braces} and report a 50\\% speedup~\\citep[p.~3]{a,b}. % hidden-comment\n"
+        "Results hold for $\\alpha > 0$ on every benchmark we tried in this study.\n\n"
+        "\\noindent\\textbf{Keywords --} verification, LaTeX.\n\n"
+        "\\input{sections/intro}\n"
+        "\\bibliography{refs}\n"
+        "\\end{document}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "sections" / "intro.tex").write_text(
+        "\\tsection{Introduction}{sec:intro}\n"
+        "\\paragraph{Motivation.} Engineers choose verification scopes by hand, as noted by \\citet{c}.\\todo{cite more}\n"
+        "\\begin{figure}\\caption{Hidden caption text}\\end{figure}\n"
+        "\\begin{tabular}{ll} Cell one text here & cell two text here \\\\ row two & more \\end{tabular}\n",
+        encoding="utf-8",
+    )
+
+    data = ai_check.scan_docx(tmp_path)
+    chunks = data["chunks"]
+    texts = " ".join(chunk["text"] for chunk in chunks)
+
+    assert data["documentTitle"] == "A Test Paper"
+    assert [chunk["sectionType"] for chunk in chunks] == ["abstract", "body"]
+    assert chunks[1]["sectionTitle"] == "1.1 Motivation"
+    assert "speedup [1, 2]" in texts and "Results hold for alpha > 0" in texts
+    assert "as noted by [3]" in texts
+    for dropped in ("hidden-comment", "Keywords", "cite more", "Hidden caption", "Cell one", "refs"):
+        assert dropped not in texts
+
+
+def test_scan_latex_include_tables_keeps_rows_as_paragraphs(tmp_path):
+    source = tmp_path / "body.tex"
+    source.write_text(
+        "\\section{Results}\n"
+        "Our evaluation covers two open-source accelerator designs in full detail.\n\n"
+        "\\begin{tabular}{ll} Month one establishes the baseline configurations & done \\\\ "
+        "Month two integrates the contract generation loop & planned \\end{tabular}\n",
+        encoding="utf-8",
+    )
+
+    without_tables = " ".join(chunk["text"] for chunk in ai_check.scan_docx(source)["chunks"])
+    with_tables = " ".join(chunk["text"] for chunk in ai_check.scan_docx(source, include_tables=True)["chunks"])
+
+    assert "Month one" not in without_tables
+    assert "Month one establishes the baseline configurations done" in with_tables
+    assert "Our evaluation covers two open-source accelerator designs" in with_tables
+
+
+def test_scan_missing_latex_source_reports_path(tmp_path):
+    missing = tmp_path / "missing.tex"
+    try:
+        ai_check.scan_docx(missing)
+    except RuntimeError as exc:
+        assert "source not found" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")

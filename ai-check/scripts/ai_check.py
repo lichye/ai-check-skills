@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AI-check deterministic DOCX scanner and report generator.
+"""AI-check deterministic DOCX/LaTeX scanner and report generator.
 
 This script deliberately does not call any AI model and does not calculate final
-AI-writing probabilities. It extracts DOCX text, builds chunks, scans
+AI-writing probabilities. It extracts DOCX or LaTeX text, builds chunks, scans
 explainable trace features, and renders reports from assistant-provided results.
 """
 
@@ -663,6 +663,257 @@ def read_docx_text(path: Path, include_tables: bool = False) -> tuple[str, dict[
     return "\n".join(lines), metadata
 
 
+# --- LaTeX sources -----------------------------------------------------------------------------
+# A light-weight LaTeX-to-prose reader so Overleaf projects can be scanned without converting
+# them to DOCX first. It keeps paragraph boundaries and headings, numbers citations in order of
+# first use, and drops floats, display math, code listings and the bibliography.
+
+TEX_DROP_ENVS = (
+    "figure", "figure*", "table", "table*", "equation", "equation*", "align", "align*", "gather",
+    "gather*", "multline", "multline*", "eqnarray", "eqnarray*", "displaymath", "lstlisting",
+    "verbatim", "minted", "tikzpicture", "algorithm", "algorithmic", "thebibliography", "comment",
+)
+TEX_TABLE_ENVS = ("tabular", "tabular*", "tabularx", "longtable", "tabulary")
+TEX_DROP_CMDS = {
+    "label", "vspace", "hspace", "bibliography", "bibliographystyle", "includegraphics", "todo",
+    "url", "phantomsection", "noindent", "centering", "clearpage", "newpage", "pagebreak",
+    "par", "smallskip", "medskip", "bigskip", "maketitle", "tableofcontents", "appendix",
+    "caption", "nocite", "addcontentsline", "setlength", "linewidth", "raggedright", "hline",
+    "toprule", "midrule", "bottomrule", "newline", "linebreak", "item",
+}
+TEX_REF_CMDS = {"ref", "cref", "Cref", "autoref", "eqref", "pageref", "nameref", "Sref"}
+TEX_CITE_RE = re.compile(r"^(?:cite|citep|citet|citealp|citealt|autocite|parencite|textcite|footcite)\*?$")
+TEX_HEADING_RE = re.compile(r"^[A-Za-z]*(?:part|chapter|section)\*?$")
+TEX_RUNIN_RE = re.compile(r"^(?:sub)*paragraph\*?$")
+TEX_SPECIAL_HEADINGS = re.compile(r"^(?:abstract|keywords?|conclusions?|references|bibliography)$", re.I)
+TEX_INPUT_RE = re.compile(r"\\(?:input|include|subfile)\s*\{([^}]*)\}")
+
+
+def strip_tex_comments(src: str) -> str:
+    return "\n".join(re.sub(r"(?<!\\)%.*", "", line) for line in src.splitlines())
+
+
+def find_tex_main(path: Path) -> Path:
+    if not path.exists():
+        raise RuntimeError(f"source not found: {path}")
+    if path.is_file():
+        return path
+    candidates = sorted(path.glob("*.tex"), key=lambda item: (item.name != "main.tex", item.name))
+    for candidate in candidates:
+        if "\\documentclass" in strip_tex_comments(candidate.read_text(encoding="utf-8", errors="replace")):
+            return candidate
+    raise RuntimeError(f"no .tex file with \\documentclass found in {path}")
+
+
+def expand_tex_inputs(path: Path, root: Path, seen: set[Path] | None = None) -> str:
+    seen = seen if seen is not None else set()
+    resolved = path.resolve()
+    if resolved in seen:
+        return ""
+    seen.add(resolved)
+    src = strip_tex_comments(path.read_text(encoding="utf-8", errors="replace"))
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1).strip()
+        child = root / (name if name.endswith(".tex") else f"{name}.tex")
+        return expand_tex_inputs(child, root, seen) if child.is_file() else ""
+
+    return TEX_INPUT_RE.sub(replace, src)
+
+
+def read_tex_group(src: str, start: int, open_char: str = "{", close_char: str = "}") -> tuple[str, int]:
+    """Return the balanced group starting at src[start] == open_char and the index after it."""
+    depth = 0
+    for index in range(start, len(src)):
+        char = src[index]
+        if char == "\\":
+            continue
+        if char == open_char and (index == 0 or src[index - 1] != "\\"):
+            depth += 1
+        elif char == close_char and src[index - 1] != "\\":
+            depth -= 1
+            if depth == 0:
+                return src[start + 1 : index], index + 1
+    return src[start + 1 :], len(src)
+
+
+def read_tex_args(src: str, index: int) -> tuple[list[str], int]:
+    """Skip optional [..] arguments and collect consecutive {..} arguments after a command."""
+    args: list[str] = []
+    while True:
+        probe = index
+        while probe < len(src) and src[probe] in " \t":
+            probe += 1
+        if probe < len(src) and src[probe] == "[" and not args:
+            _, index = read_tex_group(src, probe, "[", "]")
+        elif probe < len(src) and src[probe] == "{":
+            arg, index = read_tex_group(src, probe)
+            args.append(arg)
+        else:
+            return args, index
+
+
+class TexReader:
+    def __init__(self, include_tables: bool = False) -> None:
+        self.include_tables = include_tables
+        self.citations: dict[str, int] = {}
+        self.section = 0
+        self.subsection = 0
+
+    def heading(self, title: str, level: int) -> str:
+        title = re.sub(r"\s+", " ", self.inline(title)).strip().rstrip(" .:-–—")
+        title = re.sub(r"[。！？!?；;]", "", title)
+        if not title:
+            return "\n"
+        if TEX_SPECIAL_HEADINGS.match(title):
+            return f"\n\n{title}\n\n"
+        if level == 1:
+            self.section += 1
+            self.subsection = 0
+            return f"\n\n{self.section} {title}\n\n"
+        self.subsection += 1
+        return f"\n\n{self.section}.{self.subsection} {title}\n\n"
+
+    def cite(self, keys: str) -> str:
+        numbers = []
+        for key in (item.strip() for item in keys.split(",")):
+            if key:
+                numbers.append(self.citations.setdefault(key, len(self.citations) + 1))
+        return f"[{', '.join(map(str, numbers))}]" if numbers else ""
+
+    def inline(self, src: str) -> str:
+        out: list[str] = []
+        index = 0
+        while index < len(src):
+            char = src[index]
+            if char == "\\":
+                match = re.match(r"\\([A-Za-z]+\*?|.)", src[index:])
+                name = match.group(1) if match else ""
+                holder = [index + (len(match.group(0)) if match else 1)]
+                out.append(self.command(name, src, holder))
+                index = holder[0]
+            elif char == "$":
+                display = src.startswith("$$", index)
+                end = src.find("$$" if display else "$", index + (2 if display else 1))
+                end = len(src) if end < 0 else end
+                if not display:
+                    out.append(self.math(src[index + 1 : end]))
+                index = end + (2 if display else 1)
+            elif char in "{}":
+                index += 1
+            elif char == "~":
+                out.append(" ")
+                index += 1
+            elif char == "&":
+                out.append(" ")
+                index += 1
+            else:
+                out.append(char)
+                index += 1
+        text = "".join(out)
+        text = text.replace("---", "—").replace("--", "–").replace("``", "“").replace("''", "”")
+        return text
+
+    def math(self, src: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"\\([A-Za-z]+)", r" \1 ", src).replace("{", "").replace("}", "")).strip()
+
+    def command(self, name: str, src: str, holder: list[int]) -> str:
+        index = holder[0]
+        if name in ("%", "&", "_", "#", "$", "{", "}"):
+            return name
+        if name == "\\":
+            return " "
+        if name in (",", ";", ":", " ", "!", "/", "@"):
+            return " " if name in (",", ";", ":", " ") else ""
+        if name in ("ldots", "dots"):
+            return "…"
+        if name == "(":
+            end = src.find("\\)", index)
+            end = len(src) if end < 0 else end
+            holder[0] = end + 2
+            return self.math(src[index:end])
+        if name == "[":
+            end = src.find("\\]", index)
+            holder[0] = len(src) if end < 0 else end + 2
+            return ""
+        if name in ("begin", "end"):
+            _, holder[0] = read_tex_args(src, index)
+            return "\n"
+        args, holder[0] = read_tex_args(src, index)
+        if TEX_CITE_RE.match(name):
+            return self.cite(args[-1]) if args else ""
+        if name in TEX_REF_CMDS:
+            return "(ref)"
+        if name in TEX_DROP_CMDS:
+            return "\n" if name == "item" else ""
+        if name == "href":
+            return self.inline(args[1]) if len(args) > 1 else ""
+        if name == "footnote":
+            return f" ({self.inline(args[0])})" if args else ""
+        if TEX_HEADING_RE.match(name):
+            # \section, \chapter and custom wrappers such as \tsection are level 1; any \sub... is level 2.
+            return self.heading(args[0], 2 if "subsection" in name else 1) if args else ""
+        if TEX_RUNIN_RE.match(name):
+            return self.heading(args[0], 2) if args else ""
+        return self.inline(args[0]) if args else ""
+
+    def paragraph_runin(self, paragraph: str) -> str:
+        """Treat a paragraph opening with a short bold label ("\\textbf{Applications.} ...") as a heading."""
+        match = re.match(r"^\s*(?:\\noindent\s*)?\\textbf\s*\{", paragraph)
+        if not match:
+            return paragraph
+        label, end = read_tex_group(paragraph, match.end() - 1)
+        rest = paragraph[end:].strip()
+        clean_label = re.sub(r"\s+", " ", self.inline(label)).strip().rstrip(" .:-–—")
+        if not rest:
+            # A bold line on its own is a heading only when it names a standard section ("Abstract -").
+            return f"\\section*{{{label}}}" if TEX_SPECIAL_HEADINGS.match(clean_label) else paragraph
+        if count_chars(clean_label) > 60:
+            return paragraph
+        if re.match(r"^keywords?$", clean_label, re.I):
+            return f"Keywords: {rest}"
+        return f"\\paragraph{{{label}}} {rest}"
+
+    def read(self, body: str) -> str:
+        for env in TEX_DROP_ENVS:
+            body = re.sub(rf"\\begin\{{{re.escape(env)}\}}.*?\\end\{{{re.escape(env)}\}}", "\n", body, flags=re.S)
+        for env in TEX_TABLE_ENVS:
+            # With --include-tables every table row becomes its own paragraph; otherwise tables are dropped.
+            pattern = rf"\\begin\{{{re.escape(env)}\}}.*?\\end\{{{re.escape(env)}\}}"
+            keep_rows = lambda m: "\n\n" + re.sub(r"\\\\(?:\[[^\]]*\])?", "\n\n", m.group(0)) + "\n\n"
+            body = re.sub(pattern, keep_rows if self.include_tables else "\n", body, flags=re.S)
+        body = re.sub(r"\\begin\{abstract\}", r"\n\n\\section*{Abstract}\n\n", body)
+        paragraphs = [self.paragraph_runin(p) for p in re.split(r"\n\s*\n", body)]
+        text = self.inline("\n\n".join(paragraphs))
+        lines = [re.sub(r"\s+", " ", block).strip() for block in re.split(r"\n\s*\n", text)]
+        return "\n".join(line for line in lines if line)
+
+
+def read_tex_text(path: Path, include_tables: bool = False) -> tuple[str, dict[str, str]]:
+    main = find_tex_main(path)
+    src = expand_tex_inputs(main, main.parent)
+    metadata = {"title": "", "author": "", "subject": ""}
+    for key in ("title", "author"):
+        match = re.search(rf"\\{key}\s*(?:\[[^\]]*\])?\s*\{{", src)
+        if match:
+            raw, _ = read_tex_group(src, match.end() - 1)
+            metadata[key] = re.sub(r"\s+", " ", TexReader().inline(raw)).strip()
+    begin = src.find("\\begin{document}")
+    end = src.find("\\end{document}")
+    body = src[begin + len("\\begin{document}") if begin >= 0 else 0 : end if end >= 0 else len(src)]
+    return TexReader(include_tables=include_tables).read(body), metadata
+
+
+def is_tex_source(path: Path) -> bool:
+    return path.is_dir() or path.suffix.lower() == ".tex"
+
+
+def read_source_text(path: Path, include_tables: bool = False) -> tuple[str, dict[str, str]]:
+    if is_tex_source(path):
+        return read_tex_text(path, include_tables=include_tables)
+    return read_docx_text(path, include_tables=include_tables)
+
+
 def is_probable_document_title(text: str) -> bool:
     normalized = re.sub(r"\s+", " ", text or "").strip()
     compact = re.sub(r"\s+", "", normalized)
@@ -704,7 +955,7 @@ def scan_docx(
     max_chars: int = MAX_CHARS_PER_CHUNK,
     include_tables: bool = False,
 ) -> dict[str, Any]:
-    text, metadata = read_docx_text(path, include_tables=include_tables)
+    text, metadata = read_source_text(path, include_tables=include_tables)
     chunks = build_chunks(text, max_chars=max_chars)
     return {
         "schemaVersion": 1,
@@ -1388,7 +1639,7 @@ def generate_report(scan_path: Path, results_path: Path, out_dir: Path) -> dict[
 
 
 def command_scan(args: argparse.Namespace) -> int:
-    source = Path(args.docx)
+    source = Path(args.source)
     data = scan_docx(source, title=args.title, author=args.author, max_chars=args.max_chars, include_tables=args.include_tables)
     if args.out:
         write_json(Path(args.out), data)
@@ -1414,8 +1665,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-check deterministic DOCX scanner and report generator")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    scan = sub.add_parser("scan", help="read DOCX and write chunk/traceFeatures JSON")
-    scan.add_argument("docx", help="source DOCX path")
+    scan = sub.add_parser("scan", help="read DOCX or LaTeX and write chunk/traceFeatures JSON")
+    scan.add_argument("source", help="source DOCX, .tex file, or LaTeX project directory (\\input/\\include are followed)")
     scan.add_argument("--out", help="output scan JSON path")
     scan.add_argument("--title", help="override document title")
     scan.add_argument("--author", help="override author")
