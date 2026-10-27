@@ -56,6 +56,8 @@ Tables are skipped by default; add `--include-tables` when the user wants table 
    For pasted material, write it to a file in a scratch directory or pass it with `--text`/stdin.
 2. Judge the chunks in order. Read each chunk's `traceFeatures.riskSignals` and
    `traceFeatures.mitigatingSignals` as evidence; they are inputs to your judgement, never a score.
+   `traceFeatures.clarityIssues` lists ambiguous pronouns and bare demonstratives. They leave the
+   AI score unchanged and go on the revision list.
 3. Save a results JSON with one entry per judged chunk:
 
    ```json
@@ -75,8 +77,8 @@ Tables are skipped by default; add `--include-tables` when the user wants table 
    It writes an HTML report, a selectable-text A4 PDF and a summary JSON. The summary's `aiScore` is the
    headline number: flagged characters weighted by their fragment scores, over all characters.
    `flaggedShare` is the share of characters in fragments scored 0.30 or higher.
-5. Tell the user the AI score, the few fragments that drive it (with the concrete signals), and the
-   report path. Ask whether they want revisions.
+5. Tell the user the AI score, the few fragments that drive it (with the concrete signals), any
+   clarity issues worth fixing, and the report path. Ask whether they want revisions.
 
 ## Revising after confirmation
 
@@ -134,6 +136,9 @@ Tables are skipped by default; add `--include-tables` when the user wants table 
 - Lower the tone of generic value claims by replacing them with what the source actually did or measured.
 - Break contribution-list structure by varying sentence rhythm and tying claims to local context.
 - Cut obvious connectors and let sentence length vary naturally.
+- Repeat the noun when a pronoun could point to more than one earlier noun: "a formal check validates
+  the contract", never "a formal check validates it" after "an LLM proposes each contract". Give every
+  "This"/"These" a noun ("This bottleneck…"). A rewrite never introduces such a pronoun.
 - For over-defense, delete guards the reader already assumes, state each necessary condition once and
   positively, and write the claim as a plain fact. A rewrite never adds caveats, contrasts or disclaimers.
 - When the source lacks evidence, shrink the claim to what the source supports; never invent evidence.

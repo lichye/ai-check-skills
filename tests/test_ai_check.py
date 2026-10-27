@@ -538,3 +538,32 @@ def test_risk_bands_start_at_the_rewrite_line():
     assert ai_check.risk_band(0.30) == "medium"
     assert ai_check.risk_band(0.42) == "medium"
     assert ai_check.risk_band(0.60) == "high"
+
+
+def test_clarity_flags_pronoun_with_several_antecedents():
+    features = ai_check.scan_trace_features(
+        "Structural propagation and an LLM propose each contract, and a formal check validates it before use."
+    )
+    assert any(issue.startswith("ambiguous pronoun 'it'") for issue in features.clarityIssues)
+
+
+def test_clarity_accepts_repeated_noun_and_single_antecedent():
+    repeated = ai_check.scan_trace_features(
+        "Structural propagation and an LLM propose each contract, and a formal check validates the contract before use."
+    )
+    single = ai_check.scan_trace_features("The prototype uses Yosys. It runs on any Linux machine.")
+    expletive = ai_check.scan_trace_features("It is worth noting that the checker is fast.")
+    possessive = ai_check.scan_trace_features("The checker proves each module's guarantees from its assumptions.")
+    assert repeated.clarityIssues == single.clarityIssues == expletive.clarityIssues == possessive.clarityIssues == []
+
+
+def test_clarity_matches_pronoun_number():
+    features = ai_check.scan_trace_features(
+        "Once the lower-level contracts have been validated, the tool uses their guarantees to build the top-level proof."
+    )
+    assert features.clarityIssues == []
+
+
+def test_clarity_flags_bare_demonstrative():
+    features = ai_check.scan_trace_features("Contracts shrink each proof. This shows that contracts help.")
+    assert any(issue.startswith("bare demonstrative 'This'") for issue in features.clarityIssues)

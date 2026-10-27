@@ -177,6 +177,54 @@ DETAIL_QUALIFIER_RE = re.compile(
 # Four-word guard phrases: preposition + determiner + two words ("under the original assumptions").
 GUARD_PHRASE_RE = re.compile(r"\b(?:under|against|within|on|subject to) (?:the|its|their) [\w'-]+ [\w'-]+\b", re.I)
 
+# Clarity: a pronoun with more than one possible antecedent, or a demonstrative with no noun after it.
+# These are fix-list items for revision; they are independent of the AI score.
+PRONOUN_RE = re.compile(r"\b(it|its|they|them|their)\b", re.I)
+EXPLETIVE_IT_RE = re.compile(
+    r"^it\s+(?:is|was|seems|appears|becomes|remains)\s+(?:not\s+)?(?:possible|necessary|clear|important|worth|likely|unlikely|"
+    r"easy|hard|difficult|known|true|unclear|essential|common|useful)\b",
+    re.I,
+)
+NOUN_PHRASE_RE = re.compile(
+    r"\b(?:a|an|the|each|every|this|that|these|those|our|any|one)\s+(?:[\w-]+\s+){0,2}?[\w-]+|\b[A-Z]{2,}[A-Za-z]*\b"
+)
+BARE_DEMONSTRATIVE_RE = re.compile(
+    r"\b(This|These|That|Those)\s+(?:is|are|was|were|shows?|means?|makes?|allows?|enables?|leads?|gives?|reduces?|"
+    r"improves?|ensures?|can|will|should|may|would|could)\b"
+)
+
+
+def is_plural_head(word: str) -> bool:
+    if re.fullmatch(r"[A-Z]{2,}", word):
+        return False
+    return bool(re.search(r"(?<![su])s$|[A-Z]{2,}s$", word)) and not word.lower().endswith(("ss", "is", "us"))
+
+
+def clarity_issues(sentences: list[str]) -> list[str]:
+    issues: list[str] = []
+    for index, sentence in enumerate(sentences):
+        for match in PRONOUN_RE.finditer(sentence):
+            if EXPLETIVE_IT_RE.match(sentence[match.start():]):
+                continue
+            # "each module's guarantees from its assumptions": a possessive just before resolves "its".
+            if match.group(0).lower() == "its" and re.search(r"\w's\b(?:\W+\w+){0,6}\W*$", sentence[: match.start()]):
+                continue
+            # Candidates: noun phrases earlier in this sentence, plus the previous sentence.
+            window = sentence[: match.start()]
+            if index:
+                window = f"{sentences[index - 1]} {window}"
+            heads = {re.sub(r"^\w+\s+", "", phrase.group(0)).split()[-1] for phrase in NOUN_PHRASE_RE.finditer(window)}
+            # Match number: "it"/"its" look for singular heads, "they"/"them"/"their" for plural ones.
+            plural = match.group(0).lower() in ("they", "them", "their")
+            heads = {head.lower() for head in heads if is_plural_head(head) == plural}
+            if len(heads) >= 2:
+                context = sentence[max(0, match.start() - 30) : match.end() + 12].strip()
+                issues.append(f"ambiguous pronoun '{match.group(0)}': ...{context}...")
+        for match in BARE_DEMONSTRATIVE_RE.finditer(sentence):
+            issues.append(f"bare demonstrative '{match.group(1)}': {sentence[match.start():match.end() + 20].strip()}...")
+    return unique_limited(issues, 6)
+
+
 METHOD_NAME_RE = re.compile(
     r"\b(?:CNN|RNN|LSTM|GRU|Transformer|BERT|GPT-?\d*|ResNet-?\d*|U-?Net|YOLO\w*|ViT|Grad-CAM|XGBoost|SVM|CQT|MFCC|"
     r"BSCQT|DCAM|DCAMNet|AB-CQT|DFAM|DFAMNet)\b"
@@ -225,6 +273,7 @@ class TraceFeatures:
     evidenceMarkers: list[str]
     defenseMarkers: list[str]
     defenseCount: int
+    clarityIssues: list[str]
 
 
 @dataclass
@@ -396,6 +445,7 @@ def scan_trace_features(text: str) -> TraceFeatures:
         evidenceMarkers=evidence_markers,
         defenseMarkers=defense_markers,
         defenseCount=defense_count,
+        clarityIssues=clarity_issues(sentences),
     )
 
 

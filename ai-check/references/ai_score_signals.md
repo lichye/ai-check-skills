@@ -68,6 +68,19 @@ Typical surface forms: 首先…其次…最后, 一是…二是…三是, 综�
   work ("the period overlapped with a hiring freeze"). Inside an over-defended passage they stop counting.
 - Author-specific detail: dates, names, places, first-hand events that only the author would know.
 
+## Clarity Issues (revision list, outside the score)
+
+The scanner lists these in `traceFeatures.clarityIssues`. They are fixes for the reader and leave the AI
+score unchanged.
+
+- Ambiguous pronoun: "it"/"its" with two or more singular noun phrases in the same sentence before it
+  or in the previous sentence, or "they"/"them"/"their" with two or more plural ones. Example:
+  "Structural propagation and an LLM propose each contract, and a formal check validates it before use."
+  Fix: repeat the noun ("validates the contract"). Expletive "it is worth/possible/clear…" and "its"
+  right after a possessive ("each module's guarantees from its assumptions") are skipped.
+- Bare demonstrative: "This"/"These"/"That"/"Those" followed directly by a verb ("This shows…").
+  Fix: add the noun ("This speed-up shows…").
+
 ## Self-consistency Rule
 
 A revision must remove the risk signals that caused the high score. A revision that only makes prose
