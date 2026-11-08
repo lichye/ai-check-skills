@@ -80,6 +80,10 @@ score unchanged.
   right after a possessive ("each module's guarantees from its assumptions") are skipped.
 - Bare demonstrative: "This"/"These"/"That"/"Those" followed directly by a verb ("This shows…").
   Fix: add the noun ("This speed-up shows…").
+- Term before introduction (judged by the assistant; the scanner does not detect it): a technical term,
+  symbol or named concept that the material uses before it introduces or defines it. Example: "each
+  guarded equality holds under its guard" while guards are defined two paragraphs later.
+  Fix: define the term where it first appears, or rewrite the sentence with terms already introduced.
 
 ## Self-consistency Rule
 
